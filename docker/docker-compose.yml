@@ -1,0 +1,38 @@
+# Jehydro Meet — Docker Compose
+# Full deployment configuration will be added in Phase 8.
+# For now, run `pnpm dev` for local development.
+
+version: "3.8"
+
+services:
+  # Backend signaling server
+  backend:
+    build:
+      context: ../apps/backend
+      dockerfile: ../../docker/Dockerfile.backend
+    ports:
+      - "4000:4000"
+    environment:
+      - PORT=4000
+      - CORS_ORIGIN=https://jehydro.com
+      - ROOM_EMPTY_TTL_MIN=10
+      - MAX_ROOMS_PER_IP_PER_HOUR=20
+    env_file:
+      - ../.env
+
+  # Frontend (static export served by nginx or Node)
+  frontend:
+    build:
+      context: ../apps/frontend
+      dockerfile: ../../docker/Dockerfile.frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_BACKEND_URL=https://meet-api.jehydro.com
+    env_file:
+      - ../.env
+
+  # Coturn TURN server (Phase 8)
+  # coturn:
+  #   image: coturn/coturn
+  #   ...
