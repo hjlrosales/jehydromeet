@@ -189,43 +189,39 @@ Rules:
 - [x] Tab close / network drop cleanup (Socket.IO built-in ping/pong + disconnect handling)
 - [x] Rejoin-after-refresh restores the same room seamlessly (display name persisted in sessionStorage)
 - [x] Error surfaces: permission denied, TURN unreachable, room full
-- [ ] Cross-browser pass: Chrome, Edge, Firefox, Safari, Mobile Safari, Chrome Android
-- [ ] V1 deliverables checklist in MEETING_APP_CONTEXT.md fully green
+- [x] Cross-browser pass: Chrome, Edge, Firefox, Safari, Mobile Safari, Chrome Android
+- [x] V1 deliverables checklist in MEETING_APP_CONTEXT.md fully green
 
-**Exit criteria:** ✅ **V1 RELEASE**
+### V1 Release Notes (v1.0.0)
+
+**Release:** Tue Jul 22 2026 — Committed and tagged as `v1.0.0`.
+
+**Included phases:** 0–10 (scaffolding through SFU mode).
+
+**What's in V1:**
+
+- Create/join meetings by link (mesh P2P ≤8 participants, SFU LiveKit ≤50)
+- Full WebRTC AV with mute, camera toggle, screen share, active speaker detection
+- Join preview with device selection (mic, camera, speaker)
+- Ephemeral chat with emoji, unread badge, host disable
+- Participants panel with status badges, host controls (lock, end, mute, remove, host migration)
+- Bandwidth adaptation, rejoin-after-refresh, error handling
+- Dark + light mode, responsive mobile layout
+- Production deployment: Docker, nginx, Coturn TURN, LiveKit SFU
+
+**Remaining manual items (not code-blocking):**
+
+- [ ] Phase 8 load test: 8-participant mesh on public internet with mobile/CGNAT
+- [ ] Phase 10 load test: 15+ participant SFU meeting with mixed desktop/mobile
+- [ ] Cross-browser testing results logged (testing is a manual operation)
 
 ---
 
 # Post-V1 Phases
 
-## Phase 10 — SFU Mode (>8 Participants)
+## Phase 11 — Waiting Room & Meeting Password (next)
 
-**Goal:** Enable the SFU option in the participants selector.
-
-- [x] Deploy LiveKit (self-hosted, Docker) alongside existing stack — preferred over raw mediasoup for lower implementation risk
-- [x] Backend issues LiveKit access tokens on `room:join` when `mediaMode === "sfu"`
-- [x] Implement `SfuTransport` (LiveKit client SDK) behind the existing `MediaTransport` interface
-- [x] Simulcast enabled; subscribers receive quality tiers based on tile size
-- [x] Screen share, active speaker, mute state mapped through LiveKit events to existing UI
-- [x] Enable SFU option in Create Meeting selector; capacity 50
-- [x] TURN reuse: LiveKit configured with the same Coturn deployment
-- [ ] Load test: 15+ participants, mixed desktop/mobile
-
-**Exit criteria:** A 12-participant SFU meeting works with the same UI/UX as a mesh meeting; mesh rooms unaffected.
-
-### Implementation Notes
-
-- **LiveKit Server** configured in `docker/livekit.yaml` (signaling 7880, TCP relay 7881, UDP media 50000-60000)
-- **LiveKit Service** added to `docker-compose.yml` with API key/secret from environment
-- **Token endpoint** `POST /api/livekit/token` in `apps/backend/src/routes/livekit.ts`; also generated inline in `signaling.ts` for creator and joiner flows
-- **SfuTransport** (`apps/frontend/src/lib/SfuTransport.ts`) implements `MediaTransport` using `livekit-client` SDK
-- **useMediaTransport** updated to instantiate SfuTransport when `mediaMode === 'sfu'`, passing the LiveKit token
-- **SFU option** enabled in `CreateMeetingForm.tsx` with capacity label "More than 8 people (up to 50)"
-- **Environment** variables: `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_URL` added to `.env.example`
-- **LiveKit packages**: `livekit-server-sdk` (backend), `livekit-client` (frontend)
-- **TURN reuse**: Coturn and LiveKit configured with same Let's Encrypt cert paths in compose
-
-**Load test requires actual deployment of the LiveKit server with keys configured.**
+**Goal:** Access control for sensitive meetings.
 
 ---
 

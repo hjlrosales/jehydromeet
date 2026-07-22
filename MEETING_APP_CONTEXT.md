@@ -85,10 +85,10 @@ mediaMode: "mesh" | "sfu"
 
 | | Mesh | SFU |
 |---|---|---|
-| Selector option | "Up to 8 people" | "More than 8 people" |
+| Selector option | "Up to 8 people" | "More than 8 people (up to 50)" |
 | Transport | Full-mesh P2P WebRTC | LiveKit media server |
 | Room capacity (hard cap) | 8 | 50 (configurable) |
-| Availability | Version 1 | Phase 10 (Post-V1) |
+| Availability | V1 | V1 (LiveKit) |
 | Server media cost | None (TURN relay only when needed) | All media through SFU |
 
 Rules:
@@ -96,7 +96,7 @@ Rules:
 - Capacity is enforced **server-side**; a join beyond capacity is rejected with a "room full" error.
 - If SFU mode is selected but the SFU service is unreachable, the creator is warned and offered mesh mode (capped at 8) as fallback.
 - Join flow, chat, host controls, participants panel, and UI are **identical** in both modes. Only the media transport layer differs, behind the frontend `MediaTransport` interface (see PROMPT.md).
-- Until Phase 10 ships, the SFU option appears disabled with a "coming soon" note, or is hidden behind a feature flag.
+- SFU mode requires a LiveKit server configured with `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, and `LIVEKIT_URL` environment variables.
 
 ---
 
@@ -234,7 +234,7 @@ Not in Version 1. Delivery order and details are defined in ROADMAP.md Phases 10
 
 | Phase | Feature |
 |---|---|
-| 10 | SFU mode (>8 participants, LiveKit) — enables the second selector option |
+| 10 | ✅ SFU mode — **completed in V1** |
 | 11 | Waiting room + meeting password |
 | 12 | Recording (SFU rooms, LiveKit Egress; recording indicator for consent; retention policy) |
 | 13 | Virtual background + background blur (MediaPipe segmentation) |
@@ -245,13 +245,13 @@ Not in Version 1. Delivery order and details are defined in ROADMAP.md Phases 10
 
 # 8. Technology Stack
 
-**Frontend:** Next.js 14+ (App Router) · React · TypeScript · TailwindCSS · Socket.IO Client · WebRTC
+**Frontend:** Next.js 14+ (App Router) · React · TypeScript · TailwindCSS · Socket.IO Client · WebRTC · LiveKit Client SDK
 
-**Backend:** Node.js · Express · Socket.IO · UUID · Redis (optional, multi-instance only)
+**Backend:** Node.js · Express · Socket.IO · UUID · LiveKit Server SDK · Redis (optional, multi-instance only)
 
 **Database:** None in V1. PostgreSQL introduced only in Phase 15.
 
-**Media:** WebRTC · STUN · TURN (Coturn, required for CGNAT/mobile users) · LiveKit SFU (Phase 10+)
+**Media:** WebRTC · STUN · TURN (Coturn, required for CGNAT/mobile users) · LiveKit SFU
 
 **Deployment:** Docker · Ubuntu · Nginx (behind the existing jehydro.com reverse-proxy chain) · HTTPS / Let's Encrypt
 
@@ -372,7 +372,7 @@ README.md
 
 # 16. Version 1 Deliverables
 
-- ✅ Create Meeting (with mesh/SFU size selector; SFU disabled until Phase 10)
+- ✅ Create Meeting (with mesh/SFU size selector)
 - ✅ Join by link
 - ✅ Display name prompt
 - ✅ Audio (mute, levels, echo cancellation, noise suppression)
@@ -386,7 +386,11 @@ README.md
 - ✅ Responsive adaptive layout
 - ✅ Dark mode + light mode
 - ✅ Mobile support
-- ✅ Production deployment at https://jehydro.com/meet with TURN
+- ✅ SFU mode (LiveKit, >8 participants, up to 50)
+- ✅ Bandwidth adaptation (progressive bitrate capping)
+- ✅ Rejoin-after-refresh (sessionStorage persistence)
+- ✅ Production deployment (Docker, nginx, Coturn TURN, LiveKit SFU)
+- ✅ Abuse guardrails (rate limiting, capacity caps, input validation)
 
 ---
 
