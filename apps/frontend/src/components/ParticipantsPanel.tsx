@@ -161,8 +161,29 @@ function ParticipantRow({ p, isCurrentHost, socket }: { p: ParticipantInfo; isCu
   );
 }
 
+interface WaitingParticipant {
+  uuid: string;
+  displayName: string;
+  joinedAt: number;
+}
+
 export function ParticipantsPanel({ participants, isOpen, onClose, isHost, socket }: ParticipantsPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
+  const [waitingList, setWaitingList] = useState<WaitingParticipant[]>([]);
+
+  // Listen for waiting participants list updates (host only)
+  useEffect(() => {
+    if (!socket || !isHost) return;
+
+    const handleWaitingList = (payload: { participants: WaitingParticipant[] }) => {
+      setWaitingList(payload.participants);
+    };
+
+    socket.on(SocketEvents.WAITING_PARTICIPANTS_LIST, handleWaitingList);
+    return () => {
+      socket.off(SocketEvents.WAITING_PARTICIPANTS_LIST, handleWaitingList);
+    };
+  }, [socket, isHost]);
 
   // Close on Escape
   useEffect(() => {
@@ -190,6 +211,22 @@ export function ParticipantsPanel({ participants, isOpen, onClose, isHost, socke
       window.removeEventListener('mousedown', handleClick);
     };
   }, [isOpen, onClose]);
+
+  const handleAdmit = useCallback(
+    (targetUuid: string) => {
+      if (!socket) return;
+      socket.emit(SocketEvents.WAITING_ADMIT, { targetUuid });
+    },
+    [socket]
+  );
+
+  const handleDeny = useCallback(
+    (targetUuid: string) => {
+      if (!socket) return;
+      socket.emit(SocketEvents.WAITING_DENY, { targetUuid });
+    },
+    [socket]
+  );
 
   return (
     <>
@@ -224,7 +261,51 @@ export function ParticipantsPanel({ participants, isOpen, onClose, isHost, socke
           </button>
         </div>
 
-        {/* List */}
+        {/* Waiting list (host only) */}
+        {isHost && waitingList.length > 0 && (
+          <div className="border-b border-amber-900/30 bg-amber-900/10 px-3 py-3">
+            <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-amber-400">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                <path d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" />
+              </svg>
+              Waiting ({waitingList.length})
+            </h3>
+            <div className="space-y-1">
+              {waitingList.map((w) => (
+                <div key={w.uuid} className="flex items-center gap-2 rounded-lg bg-slate-800/50 px-3 py-2">
+                  <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-slate-700 text-xs font-bold text-slate-300">
+                    {w.displayName.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-white">{w.displayName}</p>
+                  </div>
+                  <div className="flex gap-1">
+                    <button
+                      onClick={() => handleAdmit(w.uuid)}
+                      className="flex h-7 w-7 items-center justify-center rounded-md bg-emerald-700 text-white transition-colors hover:bg-emerald-600"
+                      title="Admit"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                        <path fillRule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clipRule="evenodd" />
+                      </svg>
+                    </button>
+                    <button
+                      onClick={() => handleDeny(w.uuid)}
+                      className="flex h-7 w-7 items-center justify-center rounded-md bg-red-700 text-white transition-colors hover:bg-red-600"
+                      title="Deny"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                        <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Participants list */}
         <div className="flex-1 overflow-y-auto px-3 py-3">
           {participants.length === 0 ? (
             <p className="py-8 text-center text-sm text-slate-500">No participants</p>

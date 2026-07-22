@@ -155,6 +155,17 @@ export const SocketEvents = {
   // TURN credentials
   TURN_CREDENTIALS: 'turn:credentials',
   TURN_CREDENTIALS_RESPONSE: 'turn:credentials:response',
+
+  // Waiting room & password
+  WAITING_PARTICIPANT_ADDED: 'waiting:participant-added',
+  WAITING_PARTICIPANT_REMOVED: 'waiting:participant-removed',
+  WAITING_PARTICIPANTS_LIST: 'waiting:participants-list',
+  WAITING_ADMIT: 'waiting:admit',
+  WAITING_DENY: 'waiting:deny',
+  WAITING_ADMITTED: 'waiting:admitted',
+  WAITING_REJECTED: 'waiting:rejected',
+  PASSWORD_REQUIRED: 'room:password-required',
+  PASSWORD_INCORRECT: 'room:password-incorrect',
 } as const;
 
 export type SocketEventName = (typeof SocketEvents)[keyof typeof SocketEvents];
@@ -167,6 +178,8 @@ export interface RoomCreatePayload {
   displayName: string;
   micEnabled: boolean;
   cameraEnabled: boolean;
+  password?: string;
+  waitingRoom?: boolean;
 }
 
 export interface RoomCreatedPayload {
@@ -181,6 +194,7 @@ export interface RoomJoinPayload {
   displayName: string;
   micEnabled: boolean;
   cameraEnabled: boolean;
+  password?: string;
 }
 
 export interface RoomJoinedPayload {
@@ -242,4 +256,50 @@ export interface ScreenShareBlockedPayload {
 export interface RoomErrorPayload {
   code: string;
   message: string;
+}
+
+// -----------------------------------------------------------
+// Waiting room types
+// -----------------------------------------------------------
+export interface WaitingParticipant {
+  uuid: string;
+  displayName: string;
+  joinedAt: number;
+}
+
+export interface WaitingParticipantAddedPayload {
+  participant: WaitingParticipant;
+}
+
+export interface WaitingParticipantRemovedPayload {
+  uuid: string;
+}
+
+export interface WaitingParticipantsListPayload {
+  participants: WaitingParticipant[];
+}
+
+export interface WaitingAdmitPayload {
+  targetUuid: string;
+}
+
+export interface WaitingDenyPayload {
+  targetUuid: string;
+}
+
+export interface WaitingAdmittedPayload {
+  roomId: string;
+}
+
+export interface WaitingRejectedPayload {
+  reason: string;
+}
+
+export interface PasswordRequiredPayload {
+  roomId: string;
+}
+
+export interface PasswordIncorrectPayload {
+  roomId: string;
+  attemptsRemaining: number;
 }

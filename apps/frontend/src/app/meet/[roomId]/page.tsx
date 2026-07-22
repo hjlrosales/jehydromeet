@@ -32,12 +32,15 @@ export default function MeetRoomPage() {
       (typeof window !== 'undefined' ? sessionStorage.getItem('jehydro-display-name') : '') ??
       ''
   );
-  const [state, setState] = useState<'joining' | 'lobby' | 'preview' | 'in-meeting' | 'error'>('lobby');
+  const [state, setState] = useState<'joining' | 'lobby' | 'preview' | 'waiting' | 'in-meeting' | 'error'>('lobby');
   const [error, setError] = useState<string | null>(null);
   const [roomInfo, setRoomInfo] = useState<RoomJoinedPayload | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
   const [chatPanelOpen, setChatPanelOpen] = useState(false);
   const [meetingLocked, setMeetingLocked] = useState(false);
+  const [meetingPassword, setMeetingPassword] = useState('');
+  const [needsPassword, setNeedsPassword] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
   const joinAttempted = useRef(false);
 
   // Local video ref for rendering
@@ -127,6 +130,11 @@ export default function MeetRoomPage() {
       addToast(payload.reason, 'warning');
     };
 
+    // Waiting room events
+    const onWaitingParticipantAdded = (payload: { participant: { displayName: string } }) => {
+      addToast(`${payload.participant.displayName} is waiting to join`, 'info');
+    };
+
     // Host action events
     const onRoomLocked = () => {
       setMeetingLocked(true);
@@ -157,6 +165,7 @@ export default function MeetRoomPage() {
     socket.on(SocketEvents.SCREEN_SHARE_STARTED, onShareStarted);
     socket.on(SocketEvents.SCREEN_SHARE_STOPPED, onShareStopped);
     socket.on(SocketEvents.SCREEN_SHARE_BLOCKED, onShareBlocked);
+    socket.on(SocketEvents.WAITING_PARTICIPANT_ADDED, onWaitingParticipantAdded);
     socket.on(SocketEvents.ROOM_LOCKED, onRoomLocked);
     socket.on(SocketEvents.ROOM_UNLOCKED, onRoomUnlocked);
     socket.on(SocketEvents.ROOM_ENDED, onRoomEnded);
@@ -169,6 +178,7 @@ export default function MeetRoomPage() {
       socket.off(SocketEvents.SCREEN_SHARE_STARTED, onShareStarted);
       socket.off(SocketEvents.SCREEN_SHARE_STOPPED, onShareStopped);
       socket.off(SocketEvents.SCREEN_SHARE_BLOCKED, onShareBlocked);
+      socket.off(SocketEvents.WAITING_PARTICIPANT_ADDED, onWaitingParticipantAdded);
       socket.off(SocketEvents.ROOM_LOCKED, onRoomLocked);
       socket.off(SocketEvents.ROOM_UNLOCKED, onRoomUnlocked);
       socket.off(SocketEvents.ROOM_ENDED, onRoomEnded);
@@ -213,21 +223,32 @@ export default function MeetRoomPage() {
       const storedHostToken = sessionStorage.getItem('jehydro-host-token');
       const storedHostId = sessionStorage.getItem('jehydro-host-id');
 
-      socket.emit(SocketEvents.ROOM_JOIN, {
+      // Emit join with optional password
+      const joinPayload: Record<string, unknown> = {
         roomId,
         displayName: trimmedName,
         micEnabled: initialMic,
         cameraEnabled: initialCamera,
-      });
+      };
+      // If we have a meeting password from an earlier PASSWORD_REQUIRED prompt, include it
+      const currentPassword = meetingPassword || sessionStorage.getItem('jehydro-meeting-password') || '';
+      if (currentPassword) {
+        joinPayload.password = currentPassword;
+      }
+
+      socket.emit(SocketEvents.ROOM_JOIN, joinPayload);
 
       socket.on(SocketEvents.ROOM_JOINED, (payload: RoomJoinedPayload) => {
         socket.off(SocketEvents.ROOM_JOINED);
         socket.off(SocketEvents.ROOM_ERROR);
         socket.off(SocketEvents.ROOM_NOT_FOUND);
+        socket.off(SocketEvents.PASSWORD_REQUIRED);
+        socket.off(SocketEvents.PASSWORD_INCORRECT);
+        socket.off(SocketEvents.WAITING_ADMITTED);
+        socket.off(SocketEvents.WAITING_REJECTED);
         setRoomInfo(payload);
         setState('in-meeting');
 
-        // Store display name for rejoin-after-refresh pre-fill
         sessionStorage.setItem('jehydro-display-name', trimmedName);
 
         if (payload.yourUuid === storedHostId && storedHostToken) {
@@ -240,8 +261,11 @@ export default function MeetRoomPage() {
         socket.off(SocketEvents.ROOM_JOINED);
         socket.off(SocketEvents.ROOM_ERROR);
         socket.off(SocketEvents.ROOM_NOT_FOUND);
+        socket.off(SocketEvents.PASSWORD_REQUIRED);
+        socket.off(SocketEvents.PASSWORD_INCORRECT);
+        socket.off(SocketEvents.WAITING_ADMITTED);
+        socket.off(SocketEvents.WAITING_REJECTED);
         setState('preview');
-        // Improve error messages with context
         const errorMsg = payload.code === 'ROOM_LOCKED'
           ? `${payload.message} Ask the host to unlock the meeting.`
           : payload.code === 'RATE_LIMITED'
@@ -250,15 +274,62 @@ export default function MeetRoomPage() {
         setError(errorMsg);
       });
 
+      socket.on(SocketEvents.PASSWORD_REQUIRED, () => {
+        socket.off(SocketEvents.ROOM_JOINED);
+        socket.off(SocketEvents.ROOM_ERROR);
+        socket.off(SocketEvents.ROOM_NOT_FOUND);
+        socket.off(SocketEvents.PASSWORD_REQUIRED);
+        socket.off(SocketEvents.PASSWORD_INCORRECT);
+        socket.off(SocketEvents.WAITING_ADMITTED);
+        socket.off(SocketEvents.WAITING_REJECTED);
+        setState('preview');
+        setNeedsPassword(true);
+        setPasswordError(null);
+      });
+
+      socket.on(SocketEvents.PASSWORD_INCORRECT, () => {
+        setPasswordError('Incorrect password. Please try again.');
+        setState('preview');
+        setNeedsPassword(true);
+      });
+
+      socket.on(SocketEvents.WAITING_ADMITTED, () => {
+        socket.off(SocketEvents.ROOM_JOINED);
+        socket.off(SocketEvents.ROOM_ERROR);
+        socket.off(SocketEvents.ROOM_NOT_FOUND);
+        socket.off(SocketEvents.PASSWORD_REQUIRED);
+        socket.off(SocketEvents.PASSWORD_INCORRECT);
+        socket.off(SocketEvents.WAITING_ADMITTED);
+        socket.off(SocketEvents.WAITING_REJECTED);
+        setState('waiting');
+        sessionStorage.setItem('jehydro-display-name', trimmedName);
+      });
+
+      socket.on(SocketEvents.WAITING_REJECTED, (payload: { reason: string }) => {
+        socket.off(SocketEvents.ROOM_JOINED);
+        socket.off(SocketEvents.ROOM_ERROR);
+        socket.off(SocketEvents.ROOM_NOT_FOUND);
+        socket.off(SocketEvents.PASSWORD_REQUIRED);
+        socket.off(SocketEvents.PASSWORD_INCORRECT);
+        socket.off(SocketEvents.WAITING_ADMITTED);
+        socket.off(SocketEvents.WAITING_REJECTED);
+        setState('error');
+        setError(payload.reason);
+      });
+
       socket.on(SocketEvents.ROOM_NOT_FOUND, () => {
         socket.off(SocketEvents.ROOM_JOINED);
         socket.off(SocketEvents.ROOM_ERROR);
         socket.off(SocketEvents.ROOM_NOT_FOUND);
+        socket.off(SocketEvents.PASSWORD_REQUIRED);
+        socket.off(SocketEvents.PASSWORD_INCORRECT);
+        socket.off(SocketEvents.WAITING_ADMITTED);
+        socket.off(SocketEvents.WAITING_REJECTED);
         setState('preview');
         setError('Meeting not found. Please check the link and try again.');
       });
     },
-    [socket, roomId, displayName, setPendingMedia]
+    [socket, roomId, displayName, setPendingMedia, meetingPassword]
   );
 
   // ---------- Lobby: waiting for name input ----------
@@ -326,7 +397,47 @@ export default function MeetRoomPage() {
         displayName={displayName}
         onJoin={handlePreviewJoin}
         onBack={() => setState('lobby')}
+        needsPassword={needsPassword}
+        meetingPassword={meetingPassword}
+        onPasswordChange={setMeetingPassword}
+        passwordError={passwordError}
       />
+    );
+  }
+
+  // ---------- Waiting: waiting for host admission ----------
+  if (state === 'waiting') {
+    return (
+      <div className="flex min-h-screen flex-col bg-slate-900">
+        <main className="flex flex-1 items-center justify-center px-4">
+          <div className="w-full max-w-md text-center">
+            <div className="mb-6 mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-amber-500/20">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-8 w-8 text-amber-400">
+                <path d="M4.5 6.375a4.125 4.125 0 118.25 0 4.125 4.125 0 01-8.25 0zM14.25 8.625a3.375 3.375 0 116.75 0 3.375 3.375 0 01-6.75 0zM1.5 19.125a7.125 7.125 0 0114.25 0v.003l-.001.119a.75.75 0 01-.363.63 13.067 13.067 0 01-6.761 1.873c-2.472 0-4.786-.684-6.76-1.873a.75.75 0 01-.364-.63l-.001-.122zM17.25 19.128l-.001.144a2.25 2.25 0 01-.233.96 10.088 10.088 0 005.06-1.01.75.75 0 00.42-.643 4.875 4.875 0 00-6.957-4.611 8.586 8.586 0 011.71 5.157v.003z" />
+              </svg>
+            </div>
+            <h2 className="mb-2 text-xl font-semibold text-white">Waiting for host</h2>
+            <p className="mb-6 text-sm text-slate-400">
+              The host will admit you to the meeting shortly. Please wait.
+            </p>
+            <div className="flex justify-center gap-1">
+              <span className="h-2 w-2 animate-bounce rounded-full bg-amber-400" style={{ animationDelay: '0ms' }} />
+              <span className="h-2 w-2 animate-bounce rounded-full bg-amber-400" style={{ animationDelay: '150ms' }} />
+              <span className="h-2 w-2 animate-bounce rounded-full bg-amber-400" style={{ animationDelay: '300ms' }} />
+            </div>
+            <button
+              onClick={() => {
+                socket?.emit(SocketEvents.ROOM_LEAVE);
+                setState('lobby');
+                setError(null);
+              }}
+              className="btn-secondary mt-8"
+            >
+              Leave waiting room
+            </button>
+          </div>
+        </main>
+      </div>
     );
   }
 

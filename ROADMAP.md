@@ -243,14 +243,26 @@ Rules:
 
 **Goal:** Access control for sensitive meetings.
 
-- [ ] Create Meeting options: enable waiting room (toggle), set meeting password (optional)
-- [ ] Password checked server-side before join completes; rate-limited attempts
-- [ ] Waiting room: joiners held in a lobby state; host sees pending list with Admit / Deny
-- [ ] Admit all / Deny all bulk actions
-- [ ] Notifications to host when someone is waiting
-- [ ] Locked meeting + waiting room interaction defined: lock overrides admit
+- [x] Create Meeting options: enable waiting room (toggle), set meeting password (optional)
+- [x] Password checked server-side before join completes; rate-limited attempts (5/min per IP, SHA-256 hashed)
+- [x] Waiting room: joiners held in a lobby state; host sees pending list with Admit / Deny
+- [ ] Admit all / Deny all bulk actions (not implemented — single admit/deny only)
+- [x] Notifications to host when someone is waiting (toast + panel list update)
+- [x] Locked meeting + waiting room interaction defined: lock overrides admit
 
 **Exit criteria:** Password-protected room rejects wrong passwords; waiting-room joiners see a "waiting for host" screen and enter only when admitted.
+
+### Implementation Notes
+
+- **Password** is stored as SHA-256 hash, checked in `room:join` before waiting-room or direct join
+- **Rate limiting** uses in-memory `Map<roomId:clientIp, count>` with 5 attempts per 60s window; emits `locked: true` when exceeded
+- **Waiting room** holds joiners in a pending queue (`RoomState.pendingParticipants`) with socket tracking (`pendingSockets` + `participantSockets`)
+- **Admit flow**: host emits `waiting:admit` → server moves pending→participants, generates LiveKit token if SFU, sends `ROOM_JOINED` to admitted socket
+- **Deny flow**: host emits `waiting:deny` → server removes pending, sends `WAITING_REJECTED` to denied socket, cleans up tracking
+- **Lock override**: `WAITING_ADMIT` handler checks `room.locked` and rejects admission if true
+- **Host notifications**: `WAITING_PARTICIPANT_ADDED` event for toasts + `WAITING_PARTICIPANTS_LIST` for panel updates
+- **Frontend**: Password field in `JoinPreview`, waiting screen with animated dots, "Leave waiting room" button (emits `ROOM_LEAVE`), waiting list section in `ParticipantsPanel`
+- **Admit all / Deny all** not implemented (bulk actions left for future enhancement)
 
 ---
 

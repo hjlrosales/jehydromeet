@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
-import type { MediaMode, Participant, Room as RoomState } from '@jehydro/shared-types';
+import type { MediaMode, Participant, WaitingParticipant, Room as RoomState } from '@jehydro/shared-types';
 
 // -----------------------------------------------------------
 // In-memory room store
@@ -64,7 +64,7 @@ export class RoomManager {
       connectionState: 'connected',
     };
 
-    const room: RoomState = {
+    const room: RoomState & { password?: string; waitingRoom: boolean; pendingParticipants: Map<string, WaitingParticipant> } = {
       roomId,
       mediaMode,
       hostId,
@@ -74,12 +74,142 @@ export class RoomManager {
       screenShareAllowed: true,
       currentScreenSharerId: null,
       createdAt: Date.now(),
+      password: undefined,
+      waitingRoom: false,
+      pendingParticipants: new Map(),
     };
 
     rooms.set(roomId, room);
     console.log(`[rooms] Created room ${roomId} (mode: ${mediaMode}, host: ${hostDisplayName})`);
 
     return { roomId, hostId, hostToken };
+  }
+
+  /**
+   * Set the room password and waiting room toggle.
+   */
+  setRoomOptions(roomId: string, password?: string, waitingRoom?: boolean): boolean {
+    const room = rooms.get(roomId);
+    if (!room) return false;
+    const r = room as any;
+
+    if (password !== undefined) {
+      r.password = password ? crypto.createHash('sha256').update(password).digest('hex') : undefined;
+    }
+    if (waitingRoom !== undefined) {
+      r.waitingRoom = waitingRoom;
+    }
+    return true;
+  }
+
+  /**
+   * Check if a room has a password set.
+   */
+  hasPassword(roomId: string): boolean {
+    const room = rooms.get(roomId);
+    return !!((room as any)?.password);
+  }
+
+  /**
+   * Verify the meeting password.
+   */
+  verifyPassword(roomId: string, password: string): boolean {
+    const room = rooms.get(roomId) as any;
+    if (!room?.password) return true; // No password set
+    const hash = crypto.createHash('sha256').update(password).digest('hex');
+    return room.password === hash;
+  }
+
+  /**
+   * Check if waiting room is enabled.
+   */
+  hasWaitingRoom(roomId: string): boolean {
+    const room = rooms.get(roomId);
+    return !!(room as any)?.waitingRoom;
+  }
+
+  /**
+   * Add a participant to the waiting room (pending queue).
+   */
+  addPendingParticipant(roomId: string, displayName: string): WaitingParticipant | null {
+    const room = rooms.get(roomId);
+    if (!room) return null;
+
+    const uuid = uuidv4();
+    const pending: WaitingParticipant = {
+      uuid,
+      displayName,
+      joinedAt: Date.now(),
+    };
+
+    const roomAny = room as any;
+    if (!roomAny.pendingParticipants) {
+      roomAny.pendingParticipants = new Map<string, WaitingParticipant>();
+    }
+    roomAny.pendingParticipants.set(uuid, pending);
+    console.log(`[rooms] ${displayName} (${uuid}) is waiting to join room ${roomId}`);
+    return pending;
+  }
+
+  /**
+   * Remove a participant from the waiting room.
+   */
+  removePendingParticipant(roomId: string, uuid: string): WaitingParticipant | null {
+    const room = rooms.get(roomId);
+    if (!room) return null;
+
+    const roomAny = room as any;
+    if (!roomAny.pendingParticipants) return null;
+
+    const pending = roomAny.pendingParticipants.get(uuid);
+    if (!pending) return null;
+
+    roomAny.pendingParticipants.delete(uuid);
+    return pending;
+  }
+
+  /**
+   * Get all waiting participants.
+   */
+  getPendingParticipants(roomId: string): WaitingParticipant[] {
+    const room = rooms.get(roomId);
+    if (!room) return [];
+    const roomAny = room as any;
+    if (!roomAny.pendingParticipants) return [];
+    return Array.from(roomAny.pendingParticipants.values());
+  }
+
+  /**
+   * Admit a waiting participant into the meeting.
+   */
+  admitPendingParticipant(roomId: string, pendingUuid: string): { participant: Participant } | null {
+    const room = rooms.get(roomId);
+    if (!room) return null;
+
+    const roomAny = room as any;
+    if (!roomAny.pendingParticipants) return null;
+
+    const pending = roomAny.pendingParticipants.get(pendingUuid);
+    if (!pending) return null;
+
+    // Remove from pending
+    roomAny.pendingParticipants.delete(pendingUuid);
+
+    // Add as participant
+    const participant: Participant = {
+      uuid: pending.uuid,
+      displayName: pending.displayName,
+      joinedAt: Date.now(),
+      micEnabled: true,
+      cameraEnabled: true,
+      isSharingScreen: false,
+      isHost: false,
+      connectionState: 'connected',
+    };
+    room.participants.set(participant.uuid, participant);
+
+    console.log(`[rooms] ${participant.displayName} (${participant.uuid}) admitted to room ${roomId}`);
+    return { participant };
   }
 
   /**
@@ -254,6 +384,45 @@ export class RoomManager {
       room.currentScreenSharerId = null;
     }
     return true;
+  }
+
+  /**
+   * Check if a room exists and is joinable, including waiting room check.
+   * If waitingRoom is enabled, the room is considered joinable (into waiting).
+   */
+  canJoinOrWait(roomId: string): { ok: boolean; error?: string; needsPassword?: boolean; hasWaitingRoom?: boolean } {
+    const room = rooms.get(roomId);
+    if (!room) {
+      return { ok: false, error: 'Room not found' };
+    }
+
+    const roomAny = room as any;
+    const needsPassword = !!roomAny.password;
+    const waitingEnabled = !!roomAny.waitingRoom;
+
+    // If waiting room is enabled, capacity check is against total (participants + waiting)
+    const totalCapacity = CAPACITY[room.mediaMode] + (roomAny.waitingRoom ? 20 : 0); // Allow extra queue spots
+    const totalInRoom = room.participants.size + (roomAny.pendingParticipants?.size ?? 0);
+
+    if (totalInRoom >= totalCapacity) {
+      return { ok: false, error: 'Room is full' };
+    }
+
+    // If waiting room is enabled, lock only prevents direct join (waiting still works while locked)
+    if (room.locked && !waitingEnabled) {
+      return { ok: false, error: 'Room is locked' };
+    }
+
+    // Check direct participant capacity separately
+    if (room.locked) {
+      // Room is locked but waiting room is enabled — OK to wait
+    }
+
+    if (!room.locked && room.participants.size >= CAPACITY[room.mediaMode] && !waitingEnabled) {
+      return { ok: false, error: 'Room is full' };
+    }
+
+    return { ok: true, needsPassword, hasWaitingRoom: waitingEnabled };
   }
 
   /**

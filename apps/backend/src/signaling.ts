@@ -10,6 +10,9 @@ import type {
   SignalMessage,
   ScreenShareStartPayload,
   ChatMessagePayload,
+  WaitingAdmitPayload,
+  WaitingDenyPayload,
+  WaitingParticipantsListPayload,
 } from '@jehydro/shared-types';
 import { RoomManager } from './rooms';
 import { checkRateLimit } from './middleware/rateLimit';
@@ -38,6 +41,15 @@ const participantSockets = new Map<string, string>();
 // Maps socketId -> { roomId, hostId, hostToken } (hosts only)
 const hostTokens = new Map<string, { roomId: string; hostId: string; hostToken: string }>();
 
+// Maps pending participant uuid -> socketId (waiting room only)
+const pendingSockets = new Map<string, { roomId: string; participantUuid: string }>();
+
+// Maps roomId:clientIp -> failed password attempts
+const passwordAttempts = new Map<string, number>();
+
+const MAX_PASSWORD_ATTEMPTS = 5;
+const PASSWORD_RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
+
 export function setupSignaling(io: SocketIOServer, roomManager: RoomManager): void {
   io.on('connection', (socket: Socket) => {
     console.log(`[signaling] Socket connected: ${socket.id}`);
@@ -47,7 +59,7 @@ export function setupSignaling(io: SocketIOServer, roomManager: RoomManager): vo
     // -----------------------------------------------------------
     socket.on(SocketEvents.ROOM_CREATE, async (payload: RoomCreatePayload) => {
       try {
-        const { mediaMode, displayName } = payload;
+        const { mediaMode, displayName, password, waitingRoom } = payload;
 
         // Validate display name
         if (!displayName || displayName.trim().length === 0 || displayName.length > 40) {
@@ -88,6 +100,11 @@ export function setupSignaling(io: SocketIOServer, roomManager: RoomManager): vo
         }
 
         const { roomId, hostId, hostToken } = roomManager.createRoom(mediaMode, displayName.trim());
+
+        // Apply optional room options (password, waiting room)
+        if (password || waitingRoom) {
+          roomManager.setRoomOptions(roomId, password, waitingRoom);
+        }
 
         // Generate LiveKit token for SFU mode
         let livekitToken: string | undefined;
@@ -168,7 +185,7 @@ export function setupSignaling(io: SocketIOServer, roomManager: RoomManager): vo
     // -----------------------------------------------------------
     socket.on(SocketEvents.ROOM_JOIN, async (payload: RoomJoinPayload) => {
       try {
-        const { roomId, displayName } = payload;
+        const { roomId, displayName, password } = payload;
 
         // Validate display name
         if (!displayName || displayName.trim().length === 0 || displayName.length > 40) {
@@ -225,6 +242,78 @@ export function setupSignaling(io: SocketIOServer, roomManager: RoomManager): vo
             console.log(`[signaling] Re-join: ${existingParticipant.displayName} (${existingParticipant.uuid}) reusing socket ${socket.id}`);
             return;
           }
+        }
+
+        // -------------------------------------------------------
+        // Password check
+        // -------------------------------------------------------
+        if (roomManager.hasPassword(roomId)) {
+          if (!password) {
+            // No password provided — tell client to ask for one
+            socket.emit(SocketEvents.PASSWORD_REQUIRED, { roomId });
+            return;
+          }
+
+          // Rate limit password attempts
+          const clientIp = (socket as any)._clientIp ?? 'unknown';
+          const attemptKey = `${roomId}:${clientIp}`;
+          const currentAttempts = passwordAttempts.get(attemptKey) ?? 0;
+          const remaining = Math.max(0, MAX_PASSWORD_ATTEMPTS - currentAttempts - 1);
+
+          if (currentAttempts >= MAX_PASSWORD_ATTEMPTS) {
+            socket.emit(SocketEvents.PASSWORD_INCORRECT, { roomId, attemptsRemaining: 0, locked: true });
+            return;
+          }
+
+          if (!roomManager.verifyPassword(roomId, password)) {
+            passwordAttempts.set(attemptKey, currentAttempts + 1);
+            // Auto-expire after the window
+            setTimeout(() => passwordAttempts.delete(attemptKey), PASSWORD_RATE_LIMIT_WINDOW_MS);
+            socket.emit(SocketEvents.PASSWORD_INCORRECT, { roomId, attemptsRemaining: remaining });
+            return;
+          }
+
+          // Clear successful attempts
+          passwordAttempts.delete(attemptKey);
+        }
+
+        // -------------------------------------------------------
+        // Waiting room check
+        // -------------------------------------------------------
+        if (roomManager.hasWaitingRoom(roomId)) {
+          // Add to pending queue instead of directly joining
+          const pending = roomManager.addPendingParticipant(roomId, displayName.trim());
+          if (!pending) {
+            socket.emit(SocketEvents.ROOM_NOT_FOUND, { roomId });
+            return;
+          }
+
+          // Track this socket with a pending flag (keyed by participant UUID for lookups)
+          socketRooms.set(socket.id, { roomId, participantUuid: pending.uuid });
+          pendingSockets.set(pending.uuid, { roomId, participantUuid: pending.uuid });
+          participantSockets.set(pending.uuid, socket.id);
+
+          // Notify the host about the new waiting participant
+          notifyHostAboutWaiting(io, roomManager, socket, roomId);
+
+          // Also send a notification event so the host can show a toast
+          const hostId = roomManager.getRoom(roomId)?.hostId;
+          if (hostId) {
+            const hostSocketId = participantSockets.get(hostId);
+            if (hostSocketId) {
+              const hostSocket = io.sockets.sockets.get(hostSocketId);
+              if (hostSocket) {
+                hostSocket.emit(SocketEvents.WAITING_PARTICIPANT_ADDED, {
+                  participant: pending,
+                });
+              }
+            }
+          }
+
+          // Tell the joining client they're waiting for admission
+          socket.emit(SocketEvents.WAITING_ADMITTED, { roomId });
+          console.log(`[signaling] ${displayName.trim()} (${pending.uuid}) is waiting in room ${roomId}`);
+          return;
         }
 
         // Check if room exists and is joinable
@@ -304,6 +393,140 @@ export function setupSignaling(io: SocketIOServer, roomManager: RoomManager): vo
 
     // -----------------------------------------------------------
     // participant:updated - Broadcast media state changes to the room
+    // -----------------------------------------------------------
+    // -----------------------------------------------------------
+    // Waiting room: host admit/deny
+    // -----------------------------------------------------------
+
+    socket.on(SocketEvents.WAITING_ADMIT, async (payload: WaitingAdmitPayload) => {
+      try {
+        const validation = validateHostAction(socket.id);
+        if (!validation.valid) {
+          socket.emit(SocketEvents.ROOM_ERROR, { code: 'NOT_HOST', message: validation.error });
+          return;
+        }
+
+        const { roomId } = validation;
+
+        // Lock overrides admit: if the meeting is locked, block admission
+        const room = roomManager.getRoom(roomId);
+        if (room?.locked) {
+          socket.emit(SocketEvents.ROOM_ERROR, {
+            code: 'ROOM_LOCKED',
+            message: 'Cannot admit participants while the meeting is locked. Unlock the meeting first.',
+          });
+          return;
+        }
+
+        const pending = roomManager.getPendingParticipants(roomId);
+        const target = pending.find((p) => p.uuid === payload.targetUuid);
+        if (!target) {
+          socket.emit(SocketEvents.ROOM_ERROR, { code: 'WAITING_NOT_FOUND', message: 'Waiting participant not found.' });
+          return;
+        }
+
+        const result = roomManager.admitPendingParticipant(roomId, payload.targetUuid);
+        if (!result) {
+          socket.emit(SocketEvents.ROOM_ERROR, { code: 'ADMIT_FAILED', message: 'Failed to admit participant.' });
+          return;
+        }
+
+        const { participant } = result;
+
+        // Find the waiting participant's socket (participantSockets is always set)
+        const admitSocketId = participantSockets.get(payload.targetUuid);
+
+        if (admitSocketId) {
+          const admitSocket = io.sockets.sockets.get(admitSocketId);
+          if (admitSocket) {
+            // Update socket tracking: move from pending to active
+            socketRooms.set(admitSocketId, { roomId, participantUuid: participant.uuid });
+            pendingSockets.delete(payload.targetUuid);
+            participantSockets.set(participant.uuid, admitSocketId);
+
+            // Join the Socket.IO room
+            admitSocket.join(roomId);
+
+            // Generate LiveKit token for SFU mode
+            const room = roomManager.getRoom(roomId);
+            let livekitToken: string | undefined;
+            if (room && room.mediaMode === 'sfu') {
+              try {
+                const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+                  identity: participant.uuid,
+                  name: participant.displayName,
+                  ttl: '12h',
+                });
+                at.addGrant({ roomJoin: true, room: roomId, canPublish: true, canSubscribe: true, canPublishData: true });
+                livekitToken = await at.toJwt();
+              } catch (err) {
+                console.error('[signaling] Failed to generate LiveKit token for admit:', err);
+              }
+            }
+
+            // Send ROOM_JOINED to the admitted participant
+            const joinedPayload: RoomJoinedPayload = {
+              roomId,
+              participants: roomManager.getParticipants(roomId),
+              hostId: room?.hostId ?? '',
+              mediaMode: room?.mediaMode ?? 'mesh',
+              yourUuid: participant.uuid,
+              locked: room?.locked ?? false,
+              chatEnabled: room?.chatEnabled ?? true,
+              screenShareAllowed: room?.screenShareAllowed ?? true,
+              livekitUrl: room && room.mediaMode === 'sfu' ? LIVEKIT_URL : undefined,
+              livekitToken,
+            };
+            admitSocket.emit(SocketEvents.ROOM_JOINED, joinedPayload);
+
+            // Broadcast to room
+            const partJoinedPayload: ParticipantJoinedPayload = { participant };
+            admitSocket.to(roomId).emit(SocketEvents.PARTICIPANT_JOINED, partJoinedPayload);
+
+            // Notify host about updated waiting list
+            notifyHostAboutWaiting(io, roomManager, socket, roomId);
+          }
+        }
+      } catch (err) {
+        console.error('[signaling] Error admitting participant:', err);
+        socket.emit(SocketEvents.ROOM_ERROR, { code: 'INTERNAL_ERROR', message: 'Failed to admit participant.' });
+      }
+    });
+
+    socket.on(SocketEvents.WAITING_DENY, (payload: WaitingDenyPayload) => {
+      try {
+        const validation = validateHostAction(socket.id);
+        if (!validation.valid) {
+          socket.emit(SocketEvents.ROOM_ERROR, { code: 'NOT_HOST', message: validation.error });
+          return;
+        }
+
+        const { roomId } = validation;
+        const pending = roomManager.removePendingParticipant(roomId, payload.targetUuid);
+        if (!pending) return;
+
+        // Notify the denied participant (participantSockets is always set)
+        const denySocketId = participantSockets.get(payload.targetUuid);
+        if (denySocketId) {
+          const denySocket = io.sockets.sockets.get(denySocketId);
+          if (denySocket) {
+            denySocket.emit(SocketEvents.WAITING_REJECTED, { reason: 'The host denied your request to join the meeting.' });
+          }
+          // Clean up tracking
+          pendingSockets.delete(payload.targetUuid);
+          participantSockets.delete(payload.targetUuid);
+          socketRooms.delete(denySocketId);
+        }
+
+        // Notify host about updated waiting list
+        notifyHostAboutWaiting(io, roomManager, socket, roomId);
+      } catch (err) {
+        console.error('[signaling] Error denying participant:', err);
+      }
+    });
+
+    // -----------------------------------------------------------
+    // participant:updated
     // -----------------------------------------------------------
     socket.on(SocketEvents.PARTICIPANT_UPDATED, (payload: { uuid: string; micEnabled?: boolean; cameraEnabled?: boolean; isSharingScreen?: boolean }) => {
       try {
@@ -589,13 +812,37 @@ export function setupSignaling(io: SocketIOServer, roomManager: RoomManager): vo
 /**
  * Handle a socket leaving its room(s). Uses the socketRooms tracking map
  * instead of socket.rooms (which is empty on disconnect). Cleans up
- * host tokens and broadcasts participant:left.
+ * host tokens, pending sockets, and broadcasts participant:left.
  */
 function handleLeave(socket: Socket, io: SocketIOServer, roomManager: RoomManager): void {
   const roomEntry = socketRooms.get(socket.id);
   if (!roomEntry) return;
 
   const { roomId, participantUuid } = roomEntry;
+
+  // Check if this was a pending (waiting room) socket
+  const pendingEntry = pendingSockets.get(participantUuid);
+  if (pendingEntry) {
+    // Remove from pending queue
+    roomManager.removePendingParticipant(roomId, participantUuid);
+    pendingSockets.delete(participantUuid);
+    participantSockets.delete(participantUuid);
+    socketRooms.delete(socket.id);
+    socket.leave(roomId);
+
+    // Notify host about updated waiting list
+    const hostId = roomManager.getRoom(roomId)?.hostId;
+    if (hostId) {
+      const hostSocketId = participantSockets.get(hostId);
+      if (hostSocketId) {
+        const hostSocket = io.sockets.sockets.get(hostSocketId);
+        if (hostSocket) {
+          notifyHostAboutWaiting(io, roomManager, hostSocket, roomId);
+        }
+      }
+    }
+    return;
+  }
 
   const participant = roomManager.removeParticipant(roomId, participantUuid);
   if (participant) {
@@ -629,4 +876,24 @@ function handleLeave(socket: Socket, io: SocketIOServer, roomManager: RoomManage
   socketRooms.delete(socket.id);
   participantSockets.delete(participantUuid);
   hostTokens.delete(socket.id);
+}
+
+/**
+ * Notify the host about the current waiting list for a room.
+ * Emits the full list of waiting participants to the host's socket
+ * and a notification that someone new is waiting.
+ */
+function notifyHostAboutWaiting(io: SocketIOServer, roomManager: RoomManager, _socket: Socket, roomId: string): void {
+  const room = roomManager.getRoom(roomId);
+  if (!room) return;
+
+  const hostSocketId = participantSockets.get(room.hostId);
+  if (!hostSocketId) return;
+
+  const hostSocket = io.sockets.sockets.get(hostSocketId);
+  if (!hostSocket) return;
+
+  const waitingParticipants = roomManager.getPendingParticipants(roomId);
+  const listPayload: WaitingParticipantsListPayload = { participants: waitingParticipants };
+  hostSocket.emit(SocketEvents.WAITING_PARTICIPANTS_LIST, listPayload);
 }

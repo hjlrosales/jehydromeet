@@ -15,9 +15,13 @@ interface JoinPreviewProps {
   displayName: string;
   onJoin: (stream: MediaStream | null, micEnabled: boolean, cameraEnabled: boolean) => void;
   onBack: () => void;
+  needsPassword?: boolean;
+  meetingPassword?: string;
+  onPasswordChange?: (pw: string) => void;
+  passwordError?: string | null;
 }
 
-export function JoinPreview({ roomId, displayName, onJoin, onBack }: JoinPreviewProps) {
+export function JoinPreview({ roomId, displayName, onJoin, onBack, needsPassword, meetingPassword, onPasswordChange, passwordError }: JoinPreviewProps) {
   const [devices, setDevices] = useState<{
     audioInputs: MediaDeviceInfo[];
     audioOutputs: MediaDeviceInfo[];
@@ -432,6 +436,28 @@ export function JoinPreview({ roomId, displayName, onJoin, onBack }: JoinPreview
                 <p className="mt-1 text-xs text-slate-500">
                   Speaker selection may not be supported in all browsers.
                 </p>
+              </div>
+            )}
+
+            {/* Meeting password prompt (if required) */}
+            {needsPassword && (
+              <div className="mb-4">
+                <label htmlFor="join-password" className="mb-1.5 block text-xs font-medium text-slate-400">
+                  This meeting requires a password
+                </label>
+                <input
+                  id="join-password"
+                  type="text"
+                  value={meetingPassword ?? ''}
+                  onChange={(e) => onPasswordChange?.(e.target.value)}
+                  placeholder="Enter meeting password"
+                  className="input-field text-sm"
+                  maxLength={64}
+                  autoFocus
+                />
+                {passwordError && (
+                  <p className="mt-1 text-xs text-red-400">{passwordError}</p>
+                )}
               </div>
             )}
 
