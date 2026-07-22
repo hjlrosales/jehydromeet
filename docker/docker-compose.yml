@@ -1,38 +1,146 @@
-# Jehydro Meet — Docker Compose
-# Full deployment configuration will be added in Phase 8.
-# For now, run `pnpm dev` for local development.
+# Jehydro Meet — Docker Compose (Production Mesh V1)
+#
+# Deploys: frontend, backend, coturn (TURN), and nginx reverse proxy.
+# Build from the monorepo root: docker compose -f docker/docker-compose.yml up -d
+#
+# Prerequisites:
+#   1. DNS records for meet.jehydro.com and turn.jehydro.com pointing to your server
+#   2. Let's Encrypt certificates mounted at the paths below
+#   3. .env file with production secrets (see .env.example)
 
 version: "3.8"
 
 services:
-  # Backend signaling server
-  backend:
-    build:
-      context: ../apps/backend
-      dockerfile: ../../docker/Dockerfile.backend
+  # -----------------------------------------------------------
+  # Nginx reverse proxy — HTTPS termination + WSS upgrade
+  # -----------------------------------------------------------
+  nginx:
+    image: nginx:alpine
     ports:
-      - "4000:4000"
-    environment:
-      - PORT=4000
-      - CORS_ORIGIN=https://jehydro.com
-      - ROOM_EMPTY_TTL_MIN=10
-      - MAX_ROOMS_PER_IP_PER_HOUR=20
-    env_file:
-      - ../.env
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx-frontend.conf:/etc/nginx/conf.d/meet.conf:ro
+      # Let's Encrypt certificates — mount at these paths
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      # Certbot challenge directory for automated renewal
+      - /var/www/certbot:/var/www/certbot:ro
+    depends_on:
+      - frontend
+      - backend
+    restart: unless-stopped
+    networks:
+      - meet-net
 
-  # Frontend (static export served by nginx or Node)
+  # -----------------------------------------------------------
+  # Frontend — Next.js standalone server
+  # -----------------------------------------------------------
   frontend:
     build:
-      context: ../apps/frontend
-      dockerfile: ../../docker/Dockerfile.frontend
-    ports:
-      - "3000:3000"
+      context: ../
+      dockerfile: docker/Dockerfile.frontend
     environment:
+      - NODE_ENV=production
+      - HOSTNAME=0.0.0.0
+      - PORT=3000
       - NEXT_PUBLIC_BACKEND_URL=https://meet-api.jehydro.com
-    env_file:
-      - ../.env
+      - NEXT_PUBLIC_ICE_SERVERS=${NEXT_PUBLIC_ICE_SERVERS}
+    expose:
+      - "3000"
+    restart: unless-stopped
+    networks:
+      - meet-net
 
-  # Coturn TURN server (Phase 8)
-  # coturn:
-  #   image: coturn/coturn
-  #   ...
+  # -----------------------------------------------------------
+  # Backend — Express + Socket.IO signaling server
+  # -----------------------------------------------------------
+  backend:
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile.backend
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - CORS_ORIGIN=https://jehydro.com
+      - ROOM_EMPTY_TTL_MIN=${ROOM_EMPTY_TTL_MIN:-10}
+      - MAX_ROOMS_PER_IP_PER_HOUR=${MAX_ROOMS_PER_IP_PER_HOUR:-20}
+      - TURN_SECRET=${TURN_SECRET}
+      - TURN_URLS=${TURN_URLS:-turn:turn.jehydro.com:3478}
+      # Redis (uncomment when running >1 backend instance)
+      # - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+    expose:
+      - "4000"
+    restart: unless-stopped
+    networks:
+      - meet-net
+    # Uncomment when Redis is needed:
+    # depends_on:
+    #   - redis
+
+  # -----------------------------------------------------------
+  # Coturn — TURN/STUN server for NAT traversal
+  # -----------------------------------------------------------
+  coturn:
+    image: coturn/coturn:latest
+    ports:
+      - "3478:3478"       # STUN/TURN (TCP)
+      - "3478:3478/udp"   # STUN/TURN (UDP)
+      - "5349:5349"       # TURN (TLS)
+      - "5349:5349/udp"   # TURN (DTLS)
+      - "49152-65535:49152-65535/udp"  # TURN relay ports
+    volumes:
+      - ./coturn.conf:/etc/coturn/turnserver.conf:ro
+      - ./docker-entrypoint.sh:/docker-entrypoint.sh:ro
+      # Let's Encrypt certificates for TURN TLS
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    environment:
+      - TURN_SECRET=${TURN_SECRET}
+    entrypoint: ["/bin/sh", "/docker-entrypoint.sh"]
+    restart: unless-stopped
+    # Using host networking for TURN relay port range performance;
+    # networks key omitted intentionally when network_mode: host
+
+  # -----------------------------------------------------------
+  # LiveKit — SFU media server (>8 participants)
+  # -----------------------------------------------------------
+  livekit:
+    image: livekit/livekit-server:latest
+    command: --config /etc/livekit.yaml
+    ports:
+      - "7880:7880"         # WebSocket signaling
+      - "7881:7881"         # TCP relay
+      - "7882:7882/udp"     # UDP media
+      - "50000-60000:50000-60000/udp"  # Media relay ports
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+      # Let's Encrypt certificates for TURN TLS
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    environment:
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
+    restart: unless-stopped
+    networks:
+      - meet-net
+    # Host networking recommended for production
+    # network_mode: host
+
+  # -----------------------------------------------------------
+  # Redis — Socket.IO adapter (optional, for multi-instance backend)
+  # -----------------------------------------------------------
+  # redis:
+  #   image: redis:7-alpine
+  #   expose:
+  #     - "6379"
+  #   volumes:
+  #     - redis-data:/data
+  #   restart: unless-stopped
+  #   networks:
+  #     - meet-net
+
+networks:
+  meet-net:
+    driver: bridge
+
+# volumes:
+#   redis-data:

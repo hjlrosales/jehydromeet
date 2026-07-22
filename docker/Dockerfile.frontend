@@ -1,14 +1,81 @@
-# Jehydro Meet — Frontend Dockerfile
-# Full Docker setup in Phase 8. For development, use `pnpm dev`.
+# Jehydro Meet — Frontend Dockerfile (Production)
+# Multi-stage, pnpm-workspace-aware build using Next.js standalone output.
+# Build from the monorepo root: docker build -f docker/Dockerfile.frontend .
 
-FROM node:20-alpine AS builder
+# ------------------------------------------------------------
+# Stage 1: Install pnpm + build shared-types
+# ------------------------------------------------------------
+FROM node:20-alpine AS shared-builder
+RUN corepack enable && corepack prepare pnpm@9 --activate
 WORKDIR /app
-COPY apps/frontend/package.json ./
-RUN npm install
-COPY apps/frontend/ .
-RUN npm run build
 
-FROM nginx:alpine
-COPY --from=builder /app/out /usr/share/nginx/html
-EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
+# Copy workspace config
+COPY pnpm-workspace.yaml package.json ./
+
+# Copy shared-types package
+COPY packages/shared-types ./packages/shared-types
+
+# Install deps for shared-types only, then build it
+RUN pnpm install --frozen-lockfile --filter @jehydro/shared-types --filter . 2>/dev/null || \
+    pnpm install --no-frozen-lockfile --filter @jehydro/shared-types --filter .
+WORKDIR /app/packages/shared-types
+RUN pnpm build
+WORKDIR /app
+
+# ------------------------------------------------------------
+# Stage 2: Build frontend
+# ------------------------------------------------------------
+FROM node:20-alpine AS builder
+RUN corepack enable && corepack prepare pnpm@9 --activate
+WORKDIR /app
+
+# Copy workspace config
+COPY pnpm-workspace.yaml package.json ./
+
+# Copy shared-types (prebuilt)
+COPY --from=shared-builder /app/packages/shared-types/package.json ./packages/shared-types/
+COPY --from=shared-builder /app/packages/shared-types/dist ./packages/shared-types/dist
+
+# Copy frontend source
+COPY apps/frontend/package.json ./apps/frontend/
+COPY apps/frontend/tsconfig.json ./apps/frontend/
+COPY apps/frontend/next.config.js ./apps/frontend/
+COPY apps/frontend/postcss.config.js ./apps/frontend/
+COPY apps/frontend/tailwind.config.ts ./apps/frontend/
+COPY apps/frontend/src ./apps/frontend/src
+COPY apps/frontend/public ./apps/frontend/public
+
+# Install all dependencies (filtered to frontend + shared-types)
+RUN pnpm install --frozen-lockfile --filter @jehydro/frontend --filter @jehydro/shared-types 2>/dev/null || \
+    pnpm install --no-frozen-lockfile --filter @jehydro/frontend --filter @jehydro/shared-types
+
+# Build frontend (Next.js standalone output)
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN pnpm --filter @jehydro/frontend run build
+
+# ------------------------------------------------------------
+# Stage 3: Runtime image — minimal Node.js to run the standalone server
+# ------------------------------------------------------------
+FROM node:20-alpine
+WORKDIR /app
+
+# Install tini for proper signal handling
+RUN apk add --no-cache tini
+
+# Copy standalone output (includes a minimal node_modules)
+COPY --from=builder /app/apps/frontend/.next/standalone ./
+
+# Copy static assets (Next.js puts these outside standalone by default)
+COPY --from=builder /app/apps/frontend/.next/static ./.next/static
+COPY --from=builder /app/apps/frontend/public ./public
+
+EXPOSE 3000
+
+ENV HOSTNAME=0.0.0.0
+ENV PORT=3000
+ENV NODE_ENV=production
+
+ENTRYPOINT ["/sbin/tini", "--"]
+# Next.js standalone output places server.js at the root of standalone
+# in simple setups. In monorepo mode it may be nested. We handle both.
+CMD ["sh", "-c", "if [ -f server.js ]; then exec node server.js; elif [ -f apps/frontend/server.js ]; then exec node apps/frontend/server.js; else echo 'server.js not found'; ls -la; exit 1; fi"]

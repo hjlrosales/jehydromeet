@@ -209,12 +209,98 @@ export class RoomManager {
   }
 
   /**
+   * Start screen sharing for a participant. Sets the participant's isSharingScreen
+   * flag and the room's currentScreenSharerId. Returns an error string if another
+   * participant is already sharing.
+   */
+  startScreenShare(roomId: string, uuid: string): { ok: true } | { ok: false; error: string } {
+    const room = rooms.get(roomId);
+    if (!room) return { ok: false, error: 'Room not found' };
+
+    // Check if screen sharing is allowed by host
+    if (!room.screenShareAllowed) {
+      return { ok: false, error: 'Screen sharing is disabled by the host' };
+    }
+
+    // Check if someone else is already sharing
+    if (room.currentScreenSharerId && room.currentScreenSharerId !== uuid) {
+      const currentSharer = room.participants.get(room.currentScreenSharerId);
+      return {
+        ok: false,
+        error: `Screen sharing is already in progress by ${currentSharer?.displayName ?? 'another participant'}`,
+      };
+    }
+
+    const participant = room.participants.get(uuid);
+    if (!participant) return { ok: false, error: 'Participant not found' };
+
+    participant.isSharingScreen = true;
+    room.currentScreenSharerId = uuid;
+    return { ok: true };
+  }
+
+  /**
+   * Stop screen sharing for a participant.
+   */
+  stopScreenShare(roomId: string, uuid: string): boolean {
+    const room = rooms.get(roomId);
+    if (!room) return false;
+
+    const participant = room.participants.get(uuid);
+    if (!participant) return false;
+
+    participant.isSharingScreen = false;
+    if (room.currentScreenSharerId === uuid) {
+      room.currentScreenSharerId = null;
+    }
+    return true;
+  }
+
+  /**
+   * Set whether screen sharing is allowed in the room.
+   */
+  setScreenShareAllowed(roomId: string, allowed: boolean): boolean {
+    const room = rooms.get(roomId);
+    if (!room) return false;
+    room.screenShareAllowed = allowed;
+    return true;
+  }
+
+  /**
+   * Set whether chat is enabled in the room.
+   */
+  setChatEnabled(roomId: string, enabled: boolean): boolean {
+    const room = rooms.get(roomId);
+    if (!room) return false;
+    room.chatEnabled = enabled;
+    return true;
+  }
+
+  /**
+   * Set whether the room is locked (rejects new joins).
+   */
+  setLocked(roomId: string, locked: boolean): boolean {
+    const room = rooms.get(roomId);
+    if (!room) return false;
+    room.locked = locked;
+    return true;
+  }
+
+  /**
+   * Validate a host's token for a given room.
+   * Called for all host actions. Actual token validation happens in
+   * signaling.ts with the hostTokens map.
+   */
+  validateHostAction(roomId: string, hostId: string): boolean {
+    const room = rooms.get(roomId);
+    if (!room) return false;
+    return room.hostId === hostId;
+  }
+
+  /**
    * Validate a host's token for a given room.
    */
   validateHostToken(roomId: string, hostId: string, _hostToken: string): boolean {
-    // TODO: Phase 7 — validate token against stored server-side token Map
-    // For now, only verify hostId matches. Full token validation will be added
-    // when host control features are implemented.
     const room = rooms.get(roomId);
     if (!room) return false;
     if (room.hostId !== hostId) return false;

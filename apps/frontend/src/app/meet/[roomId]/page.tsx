@@ -1,25 +1,43 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { useParams, useSearchParams } from 'next/navigation';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { SocketEvents } from '@jehydro/shared-types';
 import type { RoomJoinedPayload, RoomErrorPayload } from '@jehydro/shared-types';
 import { useSocket } from '@/hooks/useSocket';
 import { useMediaTransport } from '@/hooks/useMediaTransport';
 import { consumePendingRoomState } from '@/lib/roomState';
 import { ThemeToggle } from '@/components/ThemeToggle';
+import { JoinPreview } from '@/components/JoinPreview';
+import { ParticipantsPanel } from '@/components/ParticipantsPanel';
+import { ChatPanel } from '@/components/ChatPanel';
+import { useToast } from '@/hooks/useToast';
+import { ToastContainer } from '@/components/ToastContainer';
+import { useChat } from '@/hooks/useChat';
 
 export default function MeetRoomPage() {
   const params = useParams();
   const searchParams = useSearchParams();
   const roomId = params.roomId as string;
+  const router = useRouter();
   const socket = useSocket();
   const media = useMediaTransport(socket);
+  const chat = useChat();
+  const { toasts, addToast, removeToast } = useToast();
 
-  const [displayName, setDisplayName] = useState(searchParams.get('name') ?? '');
-  const [state, setState] = useState<'joining' | 'lobby' | 'in-meeting' | 'error'>('lobby');
+  // Pre-fill display name from sessionStorage (rejoin after refresh).
+  // Guard against SSR where sessionStorage is not defined.
+  const [displayName, setDisplayName] = useState(
+    searchParams.get('name') ??
+      (typeof window !== 'undefined' ? sessionStorage.getItem('jehydro-display-name') : '') ??
+      ''
+  );
+  const [state, setState] = useState<'joining' | 'lobby' | 'preview' | 'in-meeting' | 'error'>('lobby');
   const [error, setError] = useState<string | null>(null);
   const [roomInfo, setRoomInfo] = useState<RoomJoinedPayload | null>(null);
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [chatPanelOpen, setChatPanelOpen] = useState(false);
+  const [meetingLocked, setMeetingLocked] = useState(false);
   const joinAttempted = useRef(false);
 
   // Local video ref for rendering
@@ -37,27 +55,130 @@ export default function MeetRoomPage() {
     const pending = consumePendingRoomState();
     if (pending) {
       setRoomInfo(pending);
-      setState('in-meeting');
+      const myName = pending.participants.find((p) => p.uuid === pending.yourUuid)?.displayName ?? '';
+      if (myName) setDisplayName(myName);
+      setState('preview');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // If name was passed in URL (from JoinMeetingForm), auto-join once socket is ready
-  useEffect(() => {
-    if (socket && displayName && state === 'lobby' && !joinAttempted.current) {
-      handleJoin();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [socket]);
-
-  // When entering in-meeting state (from pending state or after joining), start media
+  // When entering in-meeting state, start media and init chat
   useEffect(() => {
     if (state === 'in-meeting' && roomInfo && !media.isReady && socket) {
       media.joinMeeting(roomInfo);
+      chat.setSocket(socket);
+      chat.setMyUuid(roomInfo.yourUuid);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, roomInfo, media, socket]);
 
-  const handleJoin = useCallback(() => {
+  // Sync chat panel open state
+  useEffect(() => {
+    chat.setPanelOpen(chatPanelOpen);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatPanelOpen]);
+
+  // Build participant name map for chat display
+  const participantNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const p of media.allParticipants) {
+      map.set(p.uuid, p.displayName);
+    }
+    return map;
+  }, [media.allParticipants]);
+
+  // Maintain own name map so we can show names in left toasts
+  // even after the hook removes them from participantsRef
+  const nameMap = useRef<Map<string, string>>(new Map());
+
+  // Reference to self for host actions
+  // allParticipants[0] is always self (pushed first in useMediaTransport)
+  const isHost = media.allParticipants[0]?.isHost ?? false;
+
+  // Refs to avoid stale closures in event handlers
+  const micEnabledRef = useRef(media.micEnabled);
+  const toggleMicRef = useRef(media.toggleMic);
+  micEnabledRef.current = media.micEnabled;
+  toggleMicRef.current = media.toggleMic;
+
+  // Toast notifications for participant and host events
+  useEffect(() => {
+    if (!socket || state !== 'in-meeting') return;
+
+    const onJoined = (payload: { participant: { uuid: string; displayName: string } }) => {
+      nameMap.current.set(payload.participant.uuid, payload.participant.displayName);
+      addToast(`${payload.participant.displayName} joined`, 'info');
+    };
+    const onLeft = (payload: { uuid: string }) => {
+      const name = nameMap.current.get(payload.uuid) ?? 'Someone';
+      nameMap.current.delete(payload.uuid);
+      addToast(`${name} left`, 'info');
+    };
+
+    const onShareStarted = (payload: { uuid: string }) => {
+      const name = nameMap.current.get(payload.uuid) ?? 'Someone';
+      addToast(`${name} started sharing`, 'info');
+    };
+    const onShareStopped = (payload: { uuid: string }) => {
+      const name = nameMap.current.get(payload.uuid) ?? 'Someone';
+      addToast(`${name} stopped sharing`, 'info');
+    };
+    const onShareBlocked = (payload: { reason: string }) => {
+      addToast(payload.reason, 'warning');
+    };
+
+    // Host action events
+    const onRoomLocked = () => {
+      setMeetingLocked(true);
+      addToast('Meeting locked by host', 'warning');
+    };
+    const onRoomUnlocked = () => {
+      setMeetingLocked(false);
+      addToast('Meeting unlocked', 'info');
+    };
+    const onRoomEnded = () => {
+      addToast('Meeting ended by host', 'error');
+      setTimeout(() => router.push('/'), 2000);
+    };
+    const onParticipantRemoved = (payload: { reason: string }) => {
+      addToast(payload.reason, 'error');
+      setTimeout(() => router.push('/'), 2000);
+    };
+    const onHostMute = () => {
+      addToast('You were muted by the host', 'warning');
+      // Force mute via ref (avoids stale closure on media.micEnabled)
+      if (micEnabledRef.current) {
+        toggleMicRef.current();
+      }
+    };
+
+    socket.on(SocketEvents.PARTICIPANT_JOINED, onJoined);
+    socket.on(SocketEvents.PARTICIPANT_LEFT, onLeft);
+    socket.on(SocketEvents.SCREEN_SHARE_STARTED, onShareStarted);
+    socket.on(SocketEvents.SCREEN_SHARE_STOPPED, onShareStopped);
+    socket.on(SocketEvents.SCREEN_SHARE_BLOCKED, onShareBlocked);
+    socket.on(SocketEvents.ROOM_LOCKED, onRoomLocked);
+    socket.on(SocketEvents.ROOM_UNLOCKED, onRoomUnlocked);
+    socket.on(SocketEvents.ROOM_ENDED, onRoomEnded);
+    socket.on(SocketEvents.PARTICIPANT_REMOVED, onParticipantRemoved);
+    socket.on(SocketEvents.HOST_MUTE, onHostMute);
+
+    return () => {
+      socket.off(SocketEvents.PARTICIPANT_JOINED, onJoined);
+      socket.off(SocketEvents.PARTICIPANT_LEFT, onLeft);
+      socket.off(SocketEvents.SCREEN_SHARE_STARTED, onShareStarted);
+      socket.off(SocketEvents.SCREEN_SHARE_STOPPED, onShareStopped);
+      socket.off(SocketEvents.SCREEN_SHARE_BLOCKED, onShareBlocked);
+      socket.off(SocketEvents.ROOM_LOCKED, onRoomLocked);
+      socket.off(SocketEvents.ROOM_UNLOCKED, onRoomUnlocked);
+      socket.off(SocketEvents.ROOM_ENDED, onRoomEnded);
+      socket.off(SocketEvents.PARTICIPANT_REMOVED, onParticipantRemoved);
+      socket.off(SocketEvents.HOST_MUTE, onHostMute);
+    };
+  }, [socket, state, addToast]);
+
+  // Handle going from name lobby to preview
+  const goToPreview = useCallback(() => {
     const trimmedName = displayName.trim();
     if (!trimmedName) {
       setError('Please enter your display name.');
@@ -71,55 +192,79 @@ export default function MeetRoomPage() {
       setError('Unable to connect to the server. Please try again.');
       return;
     }
-
-    joinAttempted.current = true;
-    setState('joining');
     setError(null);
+    setState('preview');
+  }, [displayName, socket]);
 
-    const storedHostToken = sessionStorage.getItem('jehydro-host-token');
-    const storedHostId = sessionStorage.getItem('jehydro-host-id');
+  const { setPendingMedia } = media;
 
-    socket.emit(SocketEvents.ROOM_JOIN, {
-      roomId,
-      displayName: trimmedName,
-      micEnabled: true,
-      cameraEnabled: true,
-    });
+  // Handle join from preview: emit room:join, then enter meeting
+  const handlePreviewJoin = useCallback(
+    (stream: MediaStream | null, initialMic: boolean, initialCamera: boolean) => {
+      if (!socket) return;
 
-    socket.on(SocketEvents.ROOM_JOINED, (payload: RoomJoinedPayload) => {
-      socket.off(SocketEvents.ROOM_JOINED);
-      socket.off(SocketEvents.ROOM_ERROR);
-      socket.off(SocketEvents.ROOM_NOT_FOUND);
-      setRoomInfo(payload);
-      setState('in-meeting');
+      setPendingMedia(stream, initialMic, initialCamera);
 
-      if (payload.yourUuid === storedHostId && storedHostToken) {
-        sessionStorage.setItem('jehydro-host-token', storedHostToken);
-        sessionStorage.setItem('jehydro-host-id', payload.yourUuid);
-      }
-    });
+      const trimmedName = displayName.trim();
+      joinAttempted.current = true;
+      setState('joining');
+      setError(null);
 
-    socket.on(SocketEvents.ROOM_ERROR, (payload: RoomErrorPayload) => {
-      socket.off(SocketEvents.ROOM_JOINED);
-      socket.off(SocketEvents.ROOM_ERROR);
-      socket.off(SocketEvents.ROOM_NOT_FOUND);
-      setState('lobby');
-      setError(payload.message);
-    });
+      const storedHostToken = sessionStorage.getItem('jehydro-host-token');
+      const storedHostId = sessionStorage.getItem('jehydro-host-id');
 
-    socket.on(SocketEvents.ROOM_NOT_FOUND, () => {
-      socket.off(SocketEvents.ROOM_JOINED);
-      socket.off(SocketEvents.ROOM_ERROR);
-      socket.off(SocketEvents.ROOM_NOT_FOUND);
-      setState('lobby');
-      setError('Meeting not found. Please check the link and try again.');
-    });
-  }, [socket, roomId, displayName]);
+      socket.emit(SocketEvents.ROOM_JOIN, {
+        roomId,
+        displayName: trimmedName,
+        micEnabled: initialMic,
+        cameraEnabled: initialCamera,
+      });
+
+      socket.on(SocketEvents.ROOM_JOINED, (payload: RoomJoinedPayload) => {
+        socket.off(SocketEvents.ROOM_JOINED);
+        socket.off(SocketEvents.ROOM_ERROR);
+        socket.off(SocketEvents.ROOM_NOT_FOUND);
+        setRoomInfo(payload);
+        setState('in-meeting');
+
+        // Store display name for rejoin-after-refresh pre-fill
+        sessionStorage.setItem('jehydro-display-name', trimmedName);
+
+        if (payload.yourUuid === storedHostId && storedHostToken) {
+          sessionStorage.setItem('jehydro-host-token', storedHostToken);
+          sessionStorage.setItem('jehydro-host-id', payload.yourUuid);
+        }
+      });
+
+      socket.on(SocketEvents.ROOM_ERROR, (payload: RoomErrorPayload) => {
+        socket.off(SocketEvents.ROOM_JOINED);
+        socket.off(SocketEvents.ROOM_ERROR);
+        socket.off(SocketEvents.ROOM_NOT_FOUND);
+        setState('preview');
+        // Improve error messages with context
+        const errorMsg = payload.code === 'ROOM_LOCKED'
+          ? `${payload.message} Ask the host to unlock the meeting.`
+          : payload.code === 'RATE_LIMITED'
+            ? `${payload.message} Please wait before joining another room.`
+            : payload.message;
+        setError(errorMsg);
+      });
+
+      socket.on(SocketEvents.ROOM_NOT_FOUND, () => {
+        socket.off(SocketEvents.ROOM_JOINED);
+        socket.off(SocketEvents.ROOM_ERROR);
+        socket.off(SocketEvents.ROOM_NOT_FOUND);
+        setState('preview');
+        setError('Meeting not found. Please check the link and try again.');
+      });
+    },
+    [socket, roomId, displayName, setPendingMedia]
+  );
 
   // ---------- Lobby: waiting for name input ----------
   if (state === 'lobby') {
     return (
-      <div className="flex min-h-screen flex-col">
+      <div className="flex min-h-screen flex-col bg-white dark:bg-slate-900">
         <header className="flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-700 sm:px-6">
           <div className="flex items-center gap-2">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600">
@@ -151,7 +296,7 @@ export default function MeetRoomPage() {
                   className="input-field"
                   maxLength={40}
                   autoFocus
-                  onKeyDown={(e) => e.key === 'Enter' && handleJoin()}
+                  onKeyDown={(e) => e.key === 'Enter' && displayName.trim() && goToPreview()}
                 />
                 <p className="mt-1 text-xs text-slate-400">{displayName.length}/40</p>
               </div>
@@ -160,11 +305,11 @@ export default function MeetRoomPage() {
                   {error}
                 </div>
               )}
-              <button onClick={handleJoin} className="btn-primary w-full py-3 text-base">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="mr-2 h-5 w-5">
+              <button onClick={goToPreview} disabled={!displayName.trim()} className="btn-primary w-full py-3 text-base">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="mr-2 inline h-5 w-5">
                   <path fillRule="evenodd" d="M12.97 3.97a.75.75 0 011.06 0l7.5 7.5a.75.75 0 010 1.06l-7.5 7.5a.75.75 0 11-1.06-1.06l6.22-6.22H3a.75.75 0 010-1.5h16.19l-6.22-6.22a.75.75 0 010-1.06z" clipRule="evenodd" />
                 </svg>
-                Join
+                Next
               </button>
             </div>
           </div>
@@ -173,16 +318,28 @@ export default function MeetRoomPage() {
     );
   }
 
+  // ---------- Preview: device selection + camera preview ----------
+  if (state === 'preview') {
+    return (
+      <JoinPreview
+        roomId={roomId}
+        displayName={displayName}
+        onJoin={handlePreviewJoin}
+        onBack={() => setState('lobby')}
+      />
+    );
+  }
+
   // ---------- Joining ----------
   if (state === 'joining') {
     return (
-      <div className="flex min-h-screen items-center justify-center">
+      <div className="flex min-h-screen items-center justify-center bg-slate-900">
         <div className="text-center">
-          <svg className="mx-auto mb-4 h-8 w-8 animate-spin text-brand-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <svg className="mx-auto mb-4 h-8 w-8 animate-spin text-brand-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
           </svg>
-          <p className="text-sm text-slate-500 dark:text-slate-400">Joining meeting...</p>
+          <p className="text-sm text-slate-400">Joining meeting...</p>
         </div>
       </div>
     );
@@ -191,7 +348,7 @@ export default function MeetRoomPage() {
   // ---------- Error ----------
   if (state === 'error') {
     return (
-      <div className="flex min-h-screen items-center justify-center px-4">
+      <div className="flex min-h-screen items-center justify-center px-4 dark:bg-slate-900">
         <div className="card max-w-md text-center">
           <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-red-100 dark:bg-red-900/30">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-6 w-6 text-red-600 dark:text-red-400">
@@ -205,79 +362,483 @@ export default function MeetRoomPage() {
     );
   }
 
-  // ---------- In Meeting ----------
+  // ---------------------------------------------------------
+  // In Meeting — Full UI
+  // ---------------------------------------------------------
+
+  const totalParticipants = 1 + media.remoteStreams.length;
+
+  // Compute grid columns based on participant count
+  const gridCols =
+    totalParticipants === 1
+      ? 'grid-cols-1 max-w-4xl'
+      : totalParticipants === 2
+        ? 'grid-cols-1 sm:grid-cols-2 max-w-4xl'
+        : totalParticipants <= 4
+          ? 'grid-cols-1 sm:grid-cols-2 max-w-5xl'
+          : totalParticipants <= 9
+            ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 max-w-7xl'
+            : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 max-w-full';
+
   return (
-    <div className="flex min-h-screen flex-col bg-slate-900">
+    <div className="relative flex min-h-screen flex-col bg-slate-900">
+      {/* Toast notifications */}
+      <ToastContainer toasts={toasts} onDismiss={removeToast} />
+
+      {/* Chat Panel */}
+      {chatPanelOpen && (
+        <ChatPanel
+          messages={chat.messages}
+          chatEnabled={chat.chatEnabled}
+          onSend={chat.sendMessage}
+          onClose={() => setChatPanelOpen(false)}
+          myDisplayName={media.allParticipants[0]?.displayName ?? 'You'}
+          participantNames={participantNameMap}
+        />
+      )}
+
+      {/* Participants Panel */}
+      <ParticipantsPanel
+        participants={media.allParticipants}
+        isOpen={panelOpen}
+        onClose={() => setPanelOpen(false)}
+        isHost={isHost}
+        socket={socket}
+      />
+
       {/* Video Grid */}
-      <div className="flex flex-1 flex-wrap items-center justify-center gap-3 overflow-y-auto p-4">
-        {/* Local video tile (mirrored) */}
-        <div className="relative flex aspect-video w-full max-w-lg items-center justify-center overflow-hidden rounded-xl bg-slate-800 sm:w-[calc(50%-0.75rem)]">
-          {media.localStream ? (
-            <video
-              ref={localVideoRef}
-              autoPlay
-              playsInline
-              muted
-              className="h-full w-full scale-x-[-1] object-cover"
-            />
-          ) : (
-            <div className="flex h-full w-full items-center justify-center">
-              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-slate-600">
-                <span className="text-2xl font-bold text-white">
-                  {roomInfo?.participants.find((p) => p.uuid === roomInfo?.yourUuid)?.displayName?.charAt(0)?.toUpperCase() ?? '?'}
-                </span>
-              </div>
-            </div>
-          )}
-          {/* Overlay name + mic/camera status */}
-          <div className="absolute bottom-0 left-0 right-0 flex items-center gap-2 bg-gradient-to-t from-black/60 to-transparent p-3 pt-8">
-            <div className="flex items-center gap-1.5">
-              <span className="text-sm font-medium text-white">
-                {roomInfo?.participants.find((p) => p.uuid === roomInfo?.yourUuid)?.displayName ?? 'You'}
-              </span>
-              {roomInfo?.yourUuid === roomInfo?.hostId && (
-                <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-xs text-amber-400">Host</span>
-              )}
-            </div>
-            <div className="ml-auto flex gap-1">
-              {/* Mic icon */}
-              {media.micEnabled ? (
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" className="h-4 w-4 opacity-70">
-                  <path d="M8.25 4.5a3.75 3.75 0 117.5 0v8.25a3.75 3.75 0 11-7.5 0V4.5z" />
-                  <path d="M6 10.5a.75.75 0 01.75.75v1.5a5.25 5.25 0 1010.5 0v-1.5a.75.75 0 011.5 0v1.5a6.751 6.751 0 01-6 6.709v2.291h3a.75.75 0 010 1.5h-8.5a.75.75 0 010-1.5h3v-2.291a6.751 6.751 0 01-6-6.709v-1.5A.75.75 0 016 10.5z" />
-                </svg>
-              ) : (
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#ef4444" className="h-4 w-4">
-                  <path d="M13.5 4.5a3.75 3.75 0 117.5 0v8.25a3.75 3.75 0 11-7.5 0V4.5z" />
-                  <path d="M12 16.5a6.75 6.75 0 006.75-6.75v-1.5a.75.75 0 011.5 0v1.5a8.251 8.251 0 01-7.5 8.209v2.291h3a.75.75 0 010 1.5h-8.5a.75.75 0 010-1.5h3v-2.291a8.251 8.251 0 01-7.5-8.209v-1.5a.75.75 0 011.5 0v1.5A6.75 6.75 0 0012 16.5z" />
-                  <line x1="3" y1="3" x2="21" y2="21" stroke="#ef4444" strokeWidth="2" />
-                </svg>
-              )}
-              {/* Camera icon */}
-              {media.cameraEnabled ? (
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" className="h-4 w-4 opacity-70">
-                  <path d="M4.5 4.5a3 3 0 00-3 3v9a3 3 0 003 3h8.25a3 3 0 003-3v-9a3 3 0 00-3-3H4.5zM19.94 18.75l-2.69-2.69V7.94l2.69-2.69c.944-.945 2.56-.276 2.56 1.06v11.38c0 1.336-1.616 2.005-2.56 1.06z" />
-                </svg>
-              ) : (
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#ef4444" className="h-4 w-4">
-                  <path d="M4.5 4.5a3 3 0 00-3 3v9a3 3 0 003 3h8.25a3 3 0 003-3v-9a3 3 0 00-3-3H4.5z" />
-                  <line x1="3" y1="3" x2="21" y2="21" stroke="#ef4444" strokeWidth="2" />
-                </svg>
-              )}
-            </div>
-          </div>
-        </div>
+      <div
+        className={`mx-auto grid w-full flex-1 ${gridCols} auto-rows-fr gap-3 overflow-y-auto p-4 ${
+          totalParticipants <= 2 ? 'place-content-center' : ''
+        }`}
+      >
+        {/* Local video tile (self) */}
+        <VideoTile
+          uuid="local"
+          displayName={media.allParticipants[0]?.displayName ?? 'You'}
+          isHost={media.allParticipants[0]?.isHost ?? false}
+          stream={media.localStream}
+          cameraEnabled={media.cameraEnabled}
+          micEnabled={media.micEnabled}
+          isSpeaking={false}
+          isLocal
+          isScreenShare={media.isSharingScreen}
+          videoRef={localVideoRef}
+        />
 
         {/* Remote video tiles */}
         {media.remoteStreams.map((remote) => (
-          <div key={remote.uuid} className="relative flex aspect-video w-full max-w-lg items-center justify-center overflow-hidden rounded-xl bg-slate-800 sm:w-[calc(50%-0.75rem)]">
-            {remote.stream && remote.cameraEnabled ? (
-              <RemoteVideo stream={remote.stream} displayName={remote.displayName} />
+          <VideoTile
+            key={remote.uuid}
+            uuid={remote.uuid}
+            displayName={remote.displayName}
+            isHost={remote.isHost}
+            stream={remote.stream}
+            cameraEnabled={remote.cameraEnabled}
+            micEnabled={remote.micEnabled}
+            isSpeaking={remote.isSpeaking}
+            isLocal={false}
+            isScreenShare={remote.isSharingScreen}
+          />
+        ))}
+      </div>
+
+      {/* Bottom toolbar */}
+      <MeetingToolbar
+        micEnabled={media.micEnabled}
+        cameraEnabled={media.cameraEnabled}
+        isSharingScreen={media.isSharingScreen}
+        screenShareAllowed={media.screenShareAllowed}
+        totalParticipants={totalParticipants}
+        isHost={isHost}
+        meetingLocked={meetingLocked}
+        onToggleMic={media.toggleMic}
+        onToggleCamera={media.toggleCamera}
+        onLeave={async () => {
+          await media.leave();
+          router.push('/');
+        }}
+        onTogglePanel={() => setPanelOpen((prev) => !prev)}
+        onShareScreen={media.isSharingScreen ? media.stopScreenShare : media.startScreenShare}
+        onChat={() => setChatPanelOpen((prev) => !prev)}
+        chatUnreadCount={chat.unreadCount}
+        onLockMeeting={() => socket?.emit(SocketEvents.HOST_LOCK)}
+        onUnlockMeeting={() => socket?.emit(SocketEvents.HOST_UNLOCK)}
+        onEndMeeting={() => socket?.emit(SocketEvents.HOST_END)}
+        onMuteAll={() => socket?.emit(SocketEvents.HOST_MUTE_ALL)}
+      />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------
+// VideoTile Component
+// ---------------------------------------------------------
+
+interface VideoTileProps {
+  uuid: string;
+  displayName: string;
+  isHost: boolean;
+  stream: MediaStream | null;
+  cameraEnabled: boolean;
+  micEnabled: boolean;
+  isSpeaking: boolean;
+  isLocal: boolean;
+  isScreenShare: boolean;
+  videoRef?: React.RefObject<HTMLVideoElement>;
+}
+
+function VideoTile({ uuid, displayName, isHost, stream, cameraEnabled, micEnabled, isSpeaking, isLocal, isScreenShare, videoRef: externalRef }: VideoTileProps) {
+  const internalRef = useRef<HTMLVideoElement>(null);
+  const videoRef = externalRef ?? internalRef;
+
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream, videoRef]);
+
+  const showVideo = stream && cameraEnabled;
+  const speakingRing = isSpeaking ? 'ring-2 ring-emerald-400 ring-offset-2 ring-offset-slate-900' : '';
+  const screenShareRing = isScreenShare ? 'ring-2 ring-brand-400 ring-offset-2 ring-offset-slate-900' : '';
+
+  return (
+    <div
+      className={`relative flex min-h-[200px] items-center justify-center overflow-hidden rounded-xl bg-slate-800 transition-all ${speakingRing} ${screenShareRing}`}
+    >
+      {showVideo ? (
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted={isLocal}
+          className={`h-full w-full object-cover ${isLocal ? 'scale-x-[-1]' : ''}`}
+        />
+      ) : (
+        /* Avatar placeholder when camera off */
+        <div className="flex h-full w-full flex-col items-center justify-center gap-3">
+          <div
+            className={`flex h-20 w-20 items-center justify-center rounded-full text-3xl font-bold text-white shadow-lg ${
+              isSpeaking ? 'ring-2 ring-emerald-400 ring-offset-2 ring-offset-slate-800' : ''
+            }`}
+            style={{
+              background: `linear-gradient(135deg, hsl(${hashCode(uuid) % 360}, 65%, 55%), hsl(${(hashCode(uuid) + 40) % 360}, 65%, 45%))`,
+            }}
+          >
+            {displayName.charAt(0).toUpperCase()}
+          </div>
+          <span className="text-sm text-slate-400">{isLocal ? 'You' : displayName}</span>
+        </div>
+      )}
+
+      {/* Screen share badge */}
+      {isScreenShare && (
+        <div className="absolute left-3 top-3 z-10 flex items-center gap-1.5 rounded-lg bg-brand-600/90 px-2.5 py-1 text-xs font-medium text-white backdrop-blur-sm">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5">
+            <path d="M3.25 4A2.25 2.25 0 001 6.25v7.5A2.25 2.25 0 003.25 16h7.5A2.25 2.25 0 0013 13.75v-7.5A2.25 2.25 0 0010.75 4h-7.5zM19 5.5a.75.75 0 00-1.28-.53l-3 3a.75.75 0 00-.22.53v2.094c0 .398.158.78.44 1.06l3 3a.75.75 0 001.06-1.06l-2.25-2.25H16.5a.75.75 0 000-1.5h-2.19l2.25-2.25A.75.75 0 0019 6.5v-1z" />
+          </svg>
+          Sharing
+        </div>
+      )}
+
+      {/* Speaking indicator */}
+      {isSpeaking && showVideo && (
+        <div className="absolute left-3 top-3 z-10 flex items-center gap-1 rounded-lg bg-emerald-600/80 px-2 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm">
+          <span className="flex h-2 w-2">
+            <span className="absolute inline-flex h-2 w-2 animate-ping rounded-full bg-emerald-300 opacity-75" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
+          </span>
+          Speaking
+        </div>
+      )}
+
+      {/* Overlay: name + mic/camera status */}
+      <div className="absolute bottom-0 left-0 right-0 flex items-center gap-2 bg-gradient-to-t from-black/70 via-black/30 to-transparent px-3 pb-3 pt-10">
+        <div className="flex items-center gap-1.5">
+          <span className="text-sm font-medium text-white">
+            {isLocal ? 'You' : displayName}
+          </span>
+          {isHost && (
+            <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-amber-400">
+              HOST
+            </span>
+          )}
+        </div>
+        <div className="ml-auto flex gap-1">
+          {/* Mic */}
+          {micEnabled ? (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" className="h-3.5 w-3.5 opacity-70">
+              <path d="M8.25 4.5a3.75 3.75 0 117.5 0v8.25a3.75 3.75 0 11-7.5 0V4.5z" />
+              <path d="M6 10.5a.75.75 0 01.75.75v1.5a5.25 5.25 0 1010.5 0v-1.5a.75.75 0 011.5 0v1.5a6.751 6.751 0 01-6 6.709v2.291h3a.75.75 0 010 1.5h-8.5a.75.75 0 010-1.5h3v-2.291a6.751 6.751 0 01-6-6.709v-1.5A.75.75 0 016 10.5z" />
+            </svg>
+          ) : (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#ef4444" className="h-3.5 w-3.5">
+              <path d="M13.5 4.5a3.75 3.75 0 117.5 0v8.25a3.75 3.75 0 11-7.5 0V4.5z" />
+              <path d="M12 16.5a6.75 6.75 0 006.75-6.75v-1.5a.75.75 0 011.5 0v1.5a8.251 8.251 0 01-7.5 8.209v2.291h3a.75.75 0 010 1.5h-8.5a.75.75 0 010-1.5h3v-2.291a8.251 8.251 0 01-7.5-8.209v-1.5a.75.75 0 011.5 0v1.5A6.75 6.75 0 0012 16.5z" />
+              <line x1="3" y1="3" x2="21" y2="21" stroke="#ef4444" strokeWidth="2" />
+            </svg>
+          )}
+          {/* Camera */}
+          {cameraEnabled ? (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" className="h-3.5 w-3.5 opacity-70">
+              <path d="M4.5 4.5a3 3 0 00-3 3v9a3 3 0 003 3h8.25a3 3 0 003-3v-9a3 3 0 00-3-3H4.5zM19.94 18.75l-2.69-2.69V7.94l2.69-2.69c.944-.945 2.56-.276 2.56 1.06v11.38c0 1.336-1.616 2.005-2.56 1.06z" />
+            </svg>
+          ) : (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#ef4444" className="h-3.5 w-3.5">
+              <path d="M4.5 4.5a3 3 0 00-3 3v9a3 3 0 003 3h8.25a3 3 0 003-3v-9a3 3 0 00-3-3H4.5z" />
+              <line x1="3" y1="3" x2="21" y2="21" stroke="#ef4444" strokeWidth="2" />
+            </svg>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Simple hash function for generating avatar colors
+function hashCode(str: string): number {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash |= 0; // Convert to 32bit integer
+  }
+  return Math.abs(hash);
+}
+
+// ---------------------------------------------------------
+// MeetingToolbar Component
+// ---------------------------------------------------------
+
+interface MeetingToolbarProps {
+  micEnabled: boolean;
+  cameraEnabled: boolean;
+  isSharingScreen: boolean;
+  screenShareAllowed: boolean;
+  totalParticipants: number;
+  isHost: boolean;
+  meetingLocked: boolean;
+  onToggleMic: () => void;
+  onToggleCamera: () => void;
+  onLeave: () => void;
+  onTogglePanel: () => void;
+  onShareScreen: () => void;
+  onChat: () => void;
+  chatUnreadCount: number;
+  onLockMeeting: () => void;
+  onUnlockMeeting: () => void;
+  onEndMeeting: () => void;
+  onMuteAll: () => void;
+}
+
+function MeetingToolbar({
+  micEnabled,
+  cameraEnabled,
+  isSharingScreen,
+  screenShareAllowed,
+  totalParticipants,
+  isHost,
+  meetingLocked,
+  onToggleMic,
+  onToggleCamera,
+  onLeave,
+  onTogglePanel,
+  onShareScreen,
+  onChat,
+  chatUnreadCount,
+  onLockMeeting,
+  onUnlockMeeting,
+  onEndMeeting,
+  onMuteAll,
+}: MeetingToolbarProps) {
+  return (
+    <div className="flex items-center justify-center gap-1.5 border-t border-slate-700 bg-slate-800/95 px-2 py-3 backdrop-blur-sm sm:gap-3 sm:px-6">
+      {/* Mic toggle */}
+      <ToolbarButton
+        active={micEnabled}
+        activeLabel="Mic"
+        inactiveLabel="Muted"
+        inactiveColor="red"
+        onClick={onToggleMic}
+        title={micEnabled ? 'Mute microphone (Ctrl+D)' : 'Unmute microphone (Ctrl+D)'}
+      >
+        {micEnabled ? (
+          <path d="M8.25 4.5a3.75 3.75 0 117.5 0v8.25a3.75 3.75 0 11-7.5 0V4.5z" />
+        ) : (
+          <>
+            <path d="M13.5 4.5a3.75 3.75 0 117.5 0v8.25a3.75 3.75 0 11-7.5 0V4.5z" />
+            <path d="M12 16.5a6.75 6.75 0 006.75-6.75v-1.5a.75.75 0 011.5 0v1.5a8.251 8.251 0 01-7.5 8.209v2.291h3a.75.75 0 010 1.5h-8.5a.75.75 0 010-1.5h3v-2.291a8.251 8.251 0 01-7.5-8.209v-1.5a.75.75 0 011.5 0v1.5A6.75 6.75 0 0012 16.5z" />
+            <line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" strokeWidth="2" />
+          </>
+        )}
+      </ToolbarButton>
+
+      {/* Camera toggle */}
+      <ToolbarButton
+        active={cameraEnabled}
+        activeLabel="Camera"
+        inactiveLabel="Off"
+        inactiveColor="red"
+        onClick={onToggleCamera}
+        title={cameraEnabled ? 'Turn off camera (Ctrl+E)' : 'Turn on camera (Ctrl+E)'}
+      >
+        {cameraEnabled ? (
+          <path d="M4.5 4.5a3 3 0 00-3 3v9a3 3 0 003 3h8.25a3 3 0 003-3v-9a3 3 0 00-3-3H4.5zM19.94 18.75l-2.69-2.69V7.94l2.69-2.69c.944-.945 2.56-.276 2.56 1.06v11.38c0 1.336-1.616 2.005-2.56 1.06z" />
+        ) : (
+          <>
+            <path d="M4.5 4.5a3 3 0 00-3 3v9a3 3 0 003 3h8.25a3 3 0 003-3v-9a3 3 0 00-3-3H4.5z" />
+            <line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" strokeWidth="2" />
+          </>
+        )}
+      </ToolbarButton>
+
+      {/* Spacer */}
+      <div className="mx-1 h-8 w-px bg-slate-700 sm:mx-2" />
+
+      {/* Share Screen */}
+      <ToolbarButton
+        active={isSharingScreen}
+        activeLabel="Stop"
+        inactiveLabel="Share"
+        inactiveColor="slate"
+        onClick={onShareScreen}
+        disabled={!isSharingScreen && !screenShareAllowed}
+        title={!screenShareAllowed ? 'Screen sharing disabled by host' : isSharingScreen ? 'Stop sharing' : 'Share screen'}
+      >
+        {isSharingScreen ? (
+          <>
+            <path d="M3.25 4A2.25 2.25 0 001 6.25v7.5A2.25 2.25 0 003.25 16h7.5A2.25 2.25 0 0013 13.75v-7.5A2.25 2.25 0 0010.75 4h-7.5zM19 5.5a.75.75 0 00-1.28-.53l-3 3a.75.75 0 00-.22.53v2.094c0 .398.158.78.44 1.06l3 3a.75.75 0 001.06-1.06l-2.25-2.25H16.5a.75.75 0 000-1.5h-2.19l2.25-2.25A.75.75 0 0019 6.5v-1z" />
+            <line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" strokeWidth="2" />
+          </>
+        ) : (
+          <path d="M3.25 4A2.25 2.25 0 001 6.25v7.5A2.25 2.25 0 003.25 16h7.5A2.25 2.25 0 0013 13.75v-7.5A2.25 2.25 0 0010.75 4h-7.5zM19 5.5a.75.75 0 00-1.28-.53l-3 3a.75.75 0 00-.22.53v2.094c0 .398.158.78.44 1.06l3 3a.75.75 0 001.06-1.06l-2.25-2.25H16.5a.75.75 0 000-1.5h-2.19l2.25-2.25A.75.75 0 0019 6.5v-1z" />
+        )}
+      </ToolbarButton>
+
+      {/* Chat */}
+      <button
+        onClick={onChat}
+        className="relative flex items-center gap-1.5 rounded-full bg-slate-700 px-3 py-2.5 text-sm font-medium text-white transition-all hover:bg-slate-600 active:scale-95 sm:px-4"
+        title="Open chat"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+          <path d="M3.25 4A2.25 2.25 0 001 6.25v8.5A2.25 2.25 0 003.25 17h.75a.75.75 0 01.75.75v2.19a1 1 0 001.7.7l2.81-2.81a.75.75 0 01.53-.22h7.26A2.25 2.25 0 0019 15.25v-8.5A2.25 2.25 0 0016.75 4H3.25z" />
+        </svg>
+        <span className="hidden sm:inline">Chat</span>
+        {chatUnreadCount > 0 && (
+          <span className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white">
+            {chatUnreadCount > 99 ? '99+' : chatUnreadCount}
+          </span>
+        )}
+      </button>
+
+      {/* Spacer */}
+      <div className="mx-1 h-8 w-px bg-slate-700 sm:mx-2" />
+
+      {/* Host-only controls */}
+      {isHost && (
+        <>
+          {/* Lock/Unlock */}
+          <ToolbarButton
+            active={meetingLocked}
+            activeLabel="Unlock"
+            inactiveLabel="Lock"
+            inactiveColor="slate"
+            onClick={meetingLocked ? onUnlockMeeting : onLockMeeting}
+            title={meetingLocked ? 'Unlock meeting' : 'Lock meeting (prevent new joins)'}
+          >
+            {meetingLocked ? (
+              <path d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
             ) : (
-              <div className="flex h-full w-full items-center justify-center">
-                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-slate-600">
-                  <span className="text-2xl font-bold text-white">{remote.displayName.charAt(0).toUpperCase()}</span>
-                </div>
-              </div>
+              <path d="M18 1.5l-6 6m0 0l-6-6m6 6V15" />
             )}
-            {/* Overlay name + stat
+          </ToolbarButton>
+
+          {/* Mute All */}
+          <ToolbarButton
+            active={false}
+            activeLabel=""
+            inactiveLabel="Mute All"
+            inactiveColor="slate"
+            onClick={onMuteAll}
+            title="Mute all participants"
+          >
+            <path d="M13.5 4.5a3.75 3.75 0 117.5 0v8.25a3.75 3.75 0 11-7.5 0V4.5z" />
+            <path d="M6 10.5a.75.75 0 01.75.75v1.5a5.25 5.25 0 1010.5 0v-1.5a.75.75 0 011.5 0v1.5a6.751 6.751 0 01-6 6.709v2.291h3a.75.75 0 010 1.5h-8.5a.75.75 0 010-1.5h3v-2.291a6.751 6.751 0 01-6-6.709v-1.5A.75.75 0 016 10.5z" />
+            <line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" strokeWidth="2" />
+          </ToolbarButton>
+
+          {/* End Meeting */}
+          <ToolbarButton
+            active={false}
+            activeLabel="End"
+            inactiveLabel="End"
+            inactiveColor="red"
+            onClick={onEndMeeting}
+            title="End meeting for all"
+          >
+            <path d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5H9.75v3.396a.75.75 0 001.28.53l6.25-6.25a.75.75 0 00-.53-1.28H11.25L15 4.767a2.25 2.25 0 00-1.591-.659H9.75z" />
+          </ToolbarButton>
+        </>
+      )}
+
+      {/* Participants */}
+      <button
+        onClick={onTogglePanel}
+        className="flex items-center gap-2 rounded-full bg-slate-700 px-4 py-2.5 text-sm font-medium text-white transition-all hover:bg-slate-600"
+        title="View participants"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+          <path d="M4.5 6.375a4.125 4.125 0 118.25 0 4.125 4.125 0 01-8.25 0zM14.25 8.625a3.375 3.375 0 116.75 0 3.375 3.375 0 01-6.75 0zM1.5 19.125a7.125 7.125 0 0114.25 0v.003l-.001.119a.75.75 0 01-.363.63 13.067 13.067 0 01-6.761 1.873c-2.472 0-4.786-.684-6.76-1.873a.75.75 0 01-.364-.63l-.001-.122zM17.25 19.128l-.001.144a2.25 2.25 0 01-.233.96 10.088 10.088 0 005.06-1.01.75.75 0 00.42-.643 4.875 4.875 0 00-6.957-4.611 8.586 8.586 0 011.71 5.157v.003z" />
+        </svg>
+        <span className="hidden sm:inline">Participants</span>
+        <span className="rounded bg-slate-600 px-1.5 py-0.5 text-xs">{totalParticipants}</span>
+      </button>
+
+      {/* Leave */}
+      <button
+        onClick={onLeave}
+        className="flex items-center gap-2 rounded-full bg-red-600 px-5 py-2.5 text-sm font-medium text-white transition-all hover:bg-red-700 active:scale-95"
+        title="Leave meeting"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+          <path fillRule="evenodd" d="M7.5 3.75A1.5 1.5 0 006 5.25v13.5a1.5 1.5 0 001.5 1.5h6a1.5 1.5 0 001.5-1.5V15a.75.75 0 011.5 0v3.75a3 3 0 01-3 3h-6a3 3 0 01-3-3V5.25a3 3 0 013-3h6a3 3 0 013 3V9A.75.75 0 0115 9V5.25a1.5 1.5 0 00-1.5-1.5h-6zm5.03 4.72a.75.75 0 010 1.06l-1.72 1.72h10.94a.75.75 0 010 1.5H10.81l1.72 1.72a.75.75 0 11-1.06 1.06l-3-3a.75.75 0 010-1.06l3-3a.75.75 0 011.06 0z" clipRule="evenodd" />
+        </svg>
+        <span className="hidden sm:inline">Leave</span>
+      </button>
+    </div>
+  );
+}
+
+// Small helper for toolbar icon buttons
+interface ToolbarButtonProps {
+  active: boolean;
+  activeLabel: string;
+  inactiveLabel: string;
+  inactiveColor: 'slate' | 'red';
+  onClick: () => void;
+  title: string;
+  disabled?: boolean;
+  children: React.ReactNode;
+}
+
+function ToolbarButton({ active, activeLabel, inactiveLabel, inactiveColor, onClick, title, disabled, children }: ToolbarButtonProps) {
+  const inactiveBg = inactiveColor === 'red' ? 'bg-red-600 hover:bg-red-700' : 'bg-slate-700 hover:bg-slate-600';
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`flex items-center gap-1.5 rounded-full px-3 py-2.5 text-sm font-medium transition-all active:scale-95 sm:px-4 ${
+        disabled ? 'cursor-not-allowed opacity-40' : ''
+      } ${
+        active && !disabled ? 'bg-slate-700 text-white hover:bg-slate-600' : `${inactiveBg} text-white`
+      }`}
+      title={title}
+    >
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+        {children}
+      </svg>
+      <span className="hidden sm:inline">{active ? activeLabel : inactiveLabel}</span>
+    </button>
+  );
+}

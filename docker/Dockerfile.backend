@@ -1,16 +1,73 @@
-# Jehydro Meet — Backend Dockerfile
-# Full Docker setup in Phase 8. For development, use `pnpm dev`.
+# Jehydro Meet — Backend Dockerfile (Production)
+# Multi-stage, pnpm-workspace-aware build.
+# Build from the monorepo root: docker build -f docker/Dockerfile.backend .
 
-FROM node:20-alpine AS builder
+# ------------------------------------------------------------
+# Stage 1: Install pnpm + build shared-types
+# ------------------------------------------------------------
+FROM node:20-alpine AS shared-builder
+RUN corepack enable && corepack prepare pnpm@9 --activate
 WORKDIR /app
-COPY apps/backend/package.json ./
-RUN npm install
-COPY apps/backend/ .
-RUN npm run build
 
+# Copy workspace config
+COPY pnpm-workspace.yaml package.json ./
+
+# Copy shared-types package (needed by both apps)
+COPY packages/shared-types ./packages/shared-types
+
+# Install deps for shared-types only, then build it
+RUN pnpm install --frozen-lockfile --filter @jehydro/shared-types --filter . 2>/dev/null || \
+    pnpm install --no-frozen-lockfile --filter @jehydro/shared-types --filter .
+WORKDIR /app/packages/shared-types
+RUN pnpm build
+WORKDIR /app
+
+# ------------------------------------------------------------
+# Stage 2: Build backend
+# ------------------------------------------------------------
+FROM node:20-alpine AS builder
+RUN corepack enable && corepack prepare pnpm@9 --activate
+WORKDIR /app
+
+# Copy workspace config
+COPY pnpm-workspace.yaml package.json ./
+
+# Copy shared-types (prebuilt)
+COPY --from=shared-builder /app/packages/shared-types/package.json ./packages/shared-types/
+COPY --from=shared-builder /app/packages/shared-types/dist ./packages/shared-types/dist
+
+# Copy backend source
+COPY apps/backend/package.json ./apps/backend/
+COPY apps/backend/tsconfig.json ./apps/backend/
+COPY apps/backend/src ./apps/backend/src
+
+# Install all dependencies (filtered to backend + shared-types)
+RUN pnpm install --frozen-lockfile --filter @jehydro/backend --filter @jehydro/shared-types 2>/dev/null || \
+    pnpm install --no-frozen-lockfile --filter @jehydro/backend --filter @jehydro/shared-types
+
+# Build backend (outputs to apps/backend/dist)
+RUN pnpm --filter @jehydro/backend run build
+
+# Deploy only production dependencies to a clean directory
+RUN pnpm --filter @jehydro/backend deploy --prod /app/deploy
+
+# ------------------------------------------------------------
+# Stage 3: Runtime image
+# ------------------------------------------------------------
 FROM node:20-alpine
 WORKDIR /app
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
+
+# Install tini for proper signal handling
+RUN apk add --no-cache tini
+
+# Copy production node_modules from deploy
+COPY --from=builder /app/deploy/node_modules ./node_modules
+
+# Copy built dist output (TypeScript compiled to JS)
+COPY --from=builder /app/apps/backend/dist ./dist
+
 EXPOSE 4000
+
+# Use tini to handle SIGTERM properly
+ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["node", "dist/index.js"]

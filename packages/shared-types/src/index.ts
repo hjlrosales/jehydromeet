@@ -109,6 +109,7 @@ export const SocketEvents = {
   ROOM_LEFT: 'room:left',
   ROOM_LOCK: 'room:lock',
   ROOM_LOCKED: 'room:locked',
+  ROOM_UNLOCKED: 'room:unlocked',
   ROOM_END: 'room:end',
   ROOM_ENDED: 'room:ended',
   ROOM_ERROR: 'room:error',
@@ -141,7 +142,9 @@ export const SocketEvents = {
   HOST_MIGRATED: 'host:migrated',
 
   // Screen share
+  SCREEN_SHARE_START: 'screen-share:start',
   SCREEN_SHARE_STARTED: 'screen-share:started',
+  SCREEN_SHARE_STOP: 'screen-share:stop',
   SCREEN_SHARE_STOPPED: 'screen-share:stopped',
   SCREEN_SHARE_BLOCKED: 'screen-share:blocked',
 
@@ -190,6 +193,9 @@ export interface RoomJoinedPayload {
   locked: boolean;
   chatEnabled: boolean;
   screenShareAllowed: boolean;
+  // LiveKit SFU fields (only present when mediaMode === 'sfu')
+  livekitUrl?: string;
+  livekitToken?: string;
 }
 
 export interface ParticipantJoinedPayload {
@@ -215,6 +221,22 @@ export interface HostRemovePayload {
 export interface HostMigratedPayload {
   newHostId: string;
   newHostToken?: string;
+}
+
+export interface ScreenShareStartPayload {
+  uuid: string;
+}
+
+export interface ScreenShareStartedPayload {
+  uuid: string;
+}
+
+export interface ScreenShareStoppedPayload {
+  uuid: string;
+}
+
+export interface ScreenShareBlockedPayload {
+  reason: string;
 }
 
 export interface RoomErrorPayload {

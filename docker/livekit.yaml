@@ -1,0 +1,59 @@
+# Jehydro Meet — LiveKit Server Configuration
+# Self-hosted SFU for meetings with >8 participants.
+# Uses the embedded TURN server for NAT traversal.
+#
+# Reference: https://docs.livekit.io/transport/self-hosting/deployment/
+
+server:
+  # Bind address
+  bind_addresses: ["0.0.0.0"]
+  # Signaling port (WebSocket for client connections)
+  port: 7880
+  # TCP relay port (fallback for restrictive networks)
+  tcp_port: 7881
+  # Prometheus metrics (optional)
+  # metrics_port: 7882
+
+  # API key/secret for token generation (set via environment)
+  # LIVEKIT_API_KEY and LIVEKIT_API_SECRET env vars
+
+# Node configuration
+node:
+  # Purge rooms after being empty for this duration
+  room_defaults:
+    empty_timeout: 300  # 5 minutes
+    max_participants: 50
+
+# WebRTC configuration
+rtc:
+  # UDP media ports
+  udp_port: 7882
+  port_range_start: 50000
+  port_range_end: 60000
+  # Use external IP for ICE candidates
+  use_external_ip: true
+  # STUN servers for NAT traversal
+  stun_servers:
+    - stun:stun.l.google.com:19302
+
+# TURN configuration (built-in, can reuse Coturn or use embedded)
+turn:
+  enabled: true
+  # Domain for TURN credentials - should match TURN_URLS env
+  domain: turn.jehydro.com
+  # TLS port (requires cert_file and key_file)
+  tls_port: 5349
+  # Certificates (Let's Encrypt)
+  # cert_file: /etc/letsencrypt/live/turn.jehydro.com/fullchain.pem
+  # key_file: /etc/letsencrypt/live/turn.jehydro.com/privkey.pem
+
+# Redis (recommended for production multi-instance)
+# redis:
+#   address: redis:6379
+#   username: ""
+#   password: ""
+#   db: 0
+#   use_tls: false
+
+# Logging
+log_level: info

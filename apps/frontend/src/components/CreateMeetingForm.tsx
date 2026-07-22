@@ -130,7 +130,7 @@ export function CreateMeetingForm({ onCreated }: CreateMeetingFormProps) {
             className={`flex cursor-pointer items-center rounded-lg border p-3 transition-all ${
               mediaMode === 'sfu'
                 ? 'border-brand-500 bg-brand-50 dark:border-brand-400 dark:bg-brand-900/20'
-                : 'border-slate-200 opacity-60 dark:border-slate-600'
+                : 'border-slate-200 hover:bg-slate-50 dark:border-slate-600 dark:hover:bg-slate-700/50'
             }`}
           >
             <input
@@ -140,15 +140,13 @@ export function CreateMeetingForm({ onCreated }: CreateMeetingFormProps) {
               checked={mediaMode === 'sfu'}
               onChange={() => setMediaMode('sfu')}
               className="h-4 w-4 text-brand-600 focus:ring-brand-500"
-              disabled
             />
             <div className="ml-3">
               <span className="text-sm font-medium text-slate-900 dark:text-white">
-                More than 8 people
+                More than 8 people (up to 50)
               </span>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Media server (SFU) &mdash;{' '}
-                <span className="italic text-amber-600 dark:text-amber-400">coming soon</span>
+                Media server (SFU). Best for larger meetings. Requires LiveKit configured.
               </p>
             </div>
           </label>

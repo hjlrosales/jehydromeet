@@ -8,8 +8,20 @@ import type {
   ParticipantJoinedPayload,
   ParticipantLeftPayload,
   SignalMessage,
+  ScreenShareStartPayload,
+  ChatMessagePayload,
 } from '@jehydro/shared-types';
 import { RoomManager } from './rooms';
+import { checkRateLimit } from './middleware/rateLimit';
+import { AccessToken } from 'livekit-server-sdk';
+
+const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY ?? '';
+const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET ?? '';
+const LIVEKIT_URL = process.env.LIVEKIT_URL ?? '';
+
+const MAX_ROOMS_PER_IP = process.env.MAX_ROOMS_PER_IP_PER_HOUR
+  ? parseInt(process.env.MAX_ROOMS_PER_IP_PER_HOUR, 10)
+  : 20;
 
 // -----------------------------------------------------------
 // Socket-to-room tracking
@@ -33,7 +45,7 @@ export function setupSignaling(io: SocketIOServer, roomManager: RoomManager): vo
     // -----------------------------------------------------------
     // room:create - Create a new meeting room
     // -----------------------------------------------------------
-    socket.on(SocketEvents.ROOM_CREATE, (payload: RoomCreatePayload) => {
+    socket.on(SocketEvents.ROOM_CREATE, async (payload: RoomCreatePayload) => {
       try {
         const { mediaMode, displayName } = payload;
 
@@ -55,16 +67,54 @@ export function setupSignaling(io: SocketIOServer, roomManager: RoomManager): vo
           return;
         }
 
-        // SFU mode not available yet
-        if (mediaMode === 'sfu') {
+        // Check LiveKit is configured for SFU mode
+        if (mediaMode === 'sfu' && (!LIVEKIT_API_KEY || !LIVEKIT_API_SECRET || !LIVEKIT_URL)) {
           socket.emit(SocketEvents.ROOM_ERROR, {
             code: 'SFU_NOT_AVAILABLE',
-            message: 'SFU mode (more than 8 participants) is coming soon. Please select mesh mode.',
+            message: 'SFU mode is not available because the LiveKit server is not configured. Please select mesh mode (up to 8 people) or contact the administrator.',
+          });
+          return;
+        }
+
+        // Abuse guardrail: rate limit room creation per IP
+        const clientIp = (socket as any)._clientIp ?? 'unknown';
+        const rateResult = checkRateLimit(`create_room:${clientIp}`, MAX_ROOMS_PER_IP, 3600_000);
+        if (!rateResult.allowed) {
+          socket.emit(SocketEvents.ROOM_ERROR, {
+            code: 'RATE_LIMITED',
+            message: `You have created too many rooms. Maximum ${MAX_ROOMS_PER_IP} per hour.`,
           });
           return;
         }
 
         const { roomId, hostId, hostToken } = roomManager.createRoom(mediaMode, displayName.trim());
+
+        // Generate LiveKit token for SFU mode
+        let livekitToken: string | undefined;
+        if (mediaMode === 'sfu') {
+          try {
+            const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+              identity: hostId,
+              name: displayName.trim(),
+              ttl: '12h',
+            });
+            at.addGrant({
+              roomJoin: true,
+              room: roomId,
+              canPublish: true,
+              canSubscribe: true,
+              canPublishData: true,
+            });
+            livekitToken = await at.toJwt();
+          } catch (err) {
+            console.error('[signaling] Failed to generate LiveKit token:', err);
+            socket.emit(SocketEvents.ROOM_ERROR, {
+              code: 'SFU_TOKEN_ERROR',
+              message: 'Failed to generate LiveKit access token. Please try mesh mode instead.',
+            });
+            return;
+          }
+        }
 
         // Track socket -> room and participant mapping
         socketRooms.set(socket.id, { roomId, participantUuid: hostId });
@@ -93,6 +143,8 @@ export function setupSignaling(io: SocketIOServer, roomManager: RoomManager): vo
           locked: false,
           chatEnabled: true,
           screenShareAllowed: true,
+          livekitUrl: mediaMode === 'sfu' ? LIVEKIT_URL : undefined,
+          livekitToken,
         };
         socket.emit(SocketEvents.ROOM_JOINED, joinedPayload);
 
@@ -114,7 +166,7 @@ export function setupSignaling(io: SocketIOServer, roomManager: RoomManager): vo
     // -----------------------------------------------------------
     // room:join - Join an existing meeting room
     // -----------------------------------------------------------
-    socket.on(SocketEvents.ROOM_JOIN, (payload: RoomJoinPayload) => {
+    socket.on(SocketEvents.ROOM_JOIN, async (payload: RoomJoinPayload) => {
       try {
         const { roomId, displayName } = payload;
 
@@ -125,6 +177,54 @@ export function setupSignaling(io: SocketIOServer, roomManager: RoomManager): vo
             message: 'Display name must be between 1 and 40 characters.',
           });
           return;
+        }
+
+        // -------------------------------------------------------
+        // Re-join detection: if this socket already has an entry
+        // in this room (e.g. from room:create), reuse the existing
+        // participant instead of creating a duplicate.
+        // -------------------------------------------------------
+        const existingEntry = socketRooms.get(socket.id);
+        if (existingEntry && existingEntry.roomId === roomId) {
+          const existingParticipant = roomManager.getParticipant(roomId, existingEntry.participantUuid);
+          if (existingParticipant) {
+            // Update display name in case it changed
+            existingParticipant.displayName = displayName.trim();
+
+            // Generate LiveKit token for SFU re-join
+            const room = roomManager.getRoom(roomId);
+            let livekitToken: string | undefined;
+            if (room && room.mediaMode === 'sfu') {
+              try {
+                const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+                  identity: existingParticipant.uuid,
+                  name: displayName.trim(),
+                  ttl: '12h',
+                });
+                at.addGrant({ roomJoin: true, room: roomId, canPublish: true, canSubscribe: true, canPublishData: true });
+                livekitToken = await at.toJwt();
+              } catch (err) {
+                console.error('[signaling] Failed to generate LiveKit token for re-join:', err);
+              }
+            }
+
+            // Reuse existing participant for the ROOM_JOINED response
+            const joinedPayload: RoomJoinedPayload = {
+              roomId,
+              participants: roomManager.getParticipants(roomId),
+              hostId: room!.hostId,
+              mediaMode: room!.mediaMode,
+              yourUuid: existingParticipant.uuid,
+              locked: room!.locked,
+              chatEnabled: room!.chatEnabled,
+              screenShareAllowed: room!.screenShareAllowed,
+              livekitUrl: room && room.mediaMode === 'sfu' ? LIVEKIT_URL : undefined,
+              livekitToken,
+            };
+            socket.emit(SocketEvents.ROOM_JOINED, joinedPayload);
+            console.log(`[signaling] Re-join: ${existingParticipant.displayName} (${existingParticipant.uuid}) reusing socket ${socket.id}`);
+            return;
+          }
         }
 
         // Check if room exists and is joinable
@@ -158,8 +258,24 @@ export function setupSignaling(io: SocketIOServer, roomManager: RoomManager): vo
         // Join the socket to the room's Socket.IO room
         socket.join(roomId);
 
-        // Send joined payload back to the joining client
+        // Generate LiveKit token for SFU mode
         const room = roomManager.getRoom(roomId);
+        let livekitToken: string | undefined;
+        if (room && room.mediaMode === 'sfu') {
+          try {
+            const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+              identity: participant.uuid,
+              name: displayName.trim(),
+              ttl: '12h',
+            });
+            at.addGrant({ roomJoin: true, room: roomId, canPublish: true, canSubscribe: true, canPublishData: true });
+            livekitToken = await at.toJwt();
+          } catch (err) {
+            console.error('[signaling] Failed to generate LiveKit token:', err);
+          }
+        }
+
+        // Send joined payload back to the joining client
         const joinedPayload: RoomJoinedPayload = {
           roomId,
           participants: roomManager.getParticipants(roomId),
@@ -169,6 +285,8 @@ export function setupSignaling(io: SocketIOServer, roomManager: RoomManager): vo
           locked: room!.locked,
           chatEnabled: room!.chatEnabled,
           screenShareAllowed: room!.screenShareAllowed,
+          livekitUrl: room && room.mediaMode === 'sfu' ? LIVEKIT_URL : undefined,
+          livekitToken,
         };
         socket.emit(SocketEvents.ROOM_JOINED, joinedPayload);
 
@@ -223,4 +341,292 @@ export function setupSignaling(io: SocketIOServer, roomManager: RoomManager): vo
 
     // -----------------------------------------------------------
     // WebRTC signaling relay
-    // Relays offe
+    // Relays offer/answer/ICE-candidate to the intended recipient.
+    // -----------------------------------------------------------
+
+    /**
+     * signal:offer - Relay a WebRTC offer to a specific participant
+     * Payload: { type: 'offer', from: uuid, to: uuid, payload: RTCSessionDescription }
+     */
+    socket.on(SocketEvents.SIGNAL_OFFER, (message: SignalMessage) => {
+      try {
+        const targetSocketId = participantSockets.get(message.to);
+        if (targetSocketId) {
+          io.to(targetSocketId).emit(SocketEvents.SIGNAL_OFFER, message);
+        }
+      } catch (err) {
+        console.error('[signaling] Error relaying offer:', err);
+      }
+    });
+
+    /**
+     * signal:answer - Relay a WebRTC answer to a specific participant
+     * Payload: { type: 'answer', from: uuid, to: uuid, payload: RTCSessionDescription }
+     */
+    socket.on(SocketEvents.SIGNAL_ANSWER, (message: SignalMessage) => {
+      try {
+        const targetSocketId = participantSockets.get(message.to);
+        if (targetSocketId) {
+          io.to(targetSocketId).emit(SocketEvents.SIGNAL_ANSWER, message);
+        }
+      } catch (err) {
+        console.error('[signaling] Error relaying answer:', err);
+      }
+    });
+
+    /**
+     * signal:ice - Relay an ICE candidate to a specific participant
+     */
+    socket.on(SocketEvents.SIGNAL_ICE, (message: SignalMessage) => {
+      try {
+        const targetSocketId = participantSockets.get(message.to);
+        if (targetSocketId) {
+          io.to(targetSocketId).emit(SocketEvents.SIGNAL_ICE, message);
+        }
+      } catch (err) {
+        console.error('[signaling] Error relaying ICE candidate:', err);
+      }
+    });
+
+    // -----------------------------------------------------------
+    // Host action validation helper
+    // -----------------------------------------------------------
+
+    /**
+     * Validates that the sender is the host of their room.
+     */
+    function validateHostAction(socketId: string): {
+      valid: true;
+      roomId: string;
+      hostId: string;
+    } | { valid: false; error: string } {
+      const roomEntry = socketRooms.get(socketId);
+      if (!roomEntry) return { valid: false, error: 'Not in a room' };
+
+      const tokenEntry = hostTokens.get(socketId);
+      if (!tokenEntry) return { valid: false, error: 'Not the host' };
+
+      const room = roomManager.getRoom(roomEntry.roomId);
+      if (!room) return { valid: false, error: 'Room not found' };
+
+      if (room.hostId !== tokenEntry.hostId) return { valid: false, error: 'Not the host' };
+
+      return { valid: true, roomId: roomEntry.roomId, hostId: tokenEntry.hostId };
+    }
+
+    // -----------------------------------------------------------
+    // Host actions
+    // -----------------------------------------------------------
+
+    socket.on(SocketEvents.HOST_LOCK, () => {
+      const validation = validateHostAction(socket.id);
+      if (!validation.valid) { socket.emit(SocketEvents.ROOM_ERROR, { code: 'NOT_HOST', message: validation.error }); return; }
+      roomManager.setLocked(validation.roomId, true);
+      io.to(validation.roomId).emit(SocketEvents.ROOM_LOCKED, { roomId: validation.roomId });
+    });
+
+    socket.on(SocketEvents.HOST_UNLOCK, () => {
+      const validation = validateHostAction(socket.id);
+      if (!validation.valid) { socket.emit(SocketEvents.ROOM_ERROR, { code: 'NOT_HOST', message: validation.error }); return; }
+      roomManager.setLocked(validation.roomId, false);
+      io.to(validation.roomId).emit(SocketEvents.ROOM_UNLOCKED, { roomId: validation.roomId });
+    });
+
+    socket.on(SocketEvents.HOST_END, () => {
+      const validation = validateHostAction(socket.id);
+      if (!validation.valid) { socket.emit(SocketEvents.ROOM_ERROR, { code: 'NOT_HOST', message: validation.error }); return; }
+      io.to(validation.roomId).emit(SocketEvents.ROOM_ENDED, { roomId: validation.roomId, reason: 'Host ended the meeting' });
+      // Clean up all sockets in the room
+      for (const p of roomManager.getParticipants(validation.roomId)) {
+        const sid = participantSockets.get(p.uuid);
+        if (sid) {
+          socketRooms.delete(sid); participantSockets.delete(p.uuid); hostTokens.delete(sid);
+          io.sockets.sockets.get(sid)?.leave(validation.roomId);
+        }
+      }
+      roomManager.destroyRoom(validation.roomId);
+    });
+
+    socket.on(SocketEvents.HOST_REMOVE, (payload: { targetUuid: string }) => {
+      const validation = validateHostAction(socket.id);
+      if (!validation.valid) { socket.emit(SocketEvents.ROOM_ERROR, { code: 'NOT_HOST', message: validation.error }); return; }
+      if (payload.targetUuid === validation.hostId) { socket.emit(SocketEvents.ROOM_ERROR, { code: 'CANNOT_REMOVE_SELF', message: 'You cannot remove yourself.' }); return; }
+      if (!roomManager.getParticipant(validation.roomId, payload.targetUuid)) {
+        socket.emit(SocketEvents.ROOM_ERROR, { code: 'PARTICIPANT_NOT_FOUND', message: 'Participant not found.' }); return;
+      }
+      const targetSocketId = participantSockets.get(payload.targetUuid);
+      if (targetSocketId) {
+        io.to(targetSocketId).emit(SocketEvents.PARTICIPANT_REMOVED, { reason: 'You were removed from the meeting by the host.' });
+        roomManager.removeParticipant(validation.roomId, payload.targetUuid);
+        io.to(validation.roomId).emit(SocketEvents.PARTICIPANT_LEFT, { uuid: payload.targetUuid });
+        socketRooms.delete(targetSocketId); participantSockets.delete(payload.targetUuid); hostTokens.delete(targetSocketId);
+        io.sockets.sockets.get(targetSocketId)?.leave(validation.roomId);
+      }
+    });
+
+    socket.on(SocketEvents.HOST_MUTE, (payload: { targetUuid: string }) => {
+      const validation = validateHostAction(socket.id);
+      if (!validation.valid) { socket.emit(SocketEvents.ROOM_ERROR, { code: 'NOT_HOST', message: validation.error }); return; }
+      if (payload.targetUuid === validation.hostId) { socket.emit(SocketEvents.ROOM_ERROR, { code: 'CANNOT_MUTE_SELF', message: 'You cannot mute yourself.' }); return; }
+      const tid = participantSockets.get(payload.targetUuid);
+      if (tid) io.to(tid).emit(SocketEvents.HOST_MUTE, { targetUuid: payload.targetUuid });
+    });
+
+    socket.on(SocketEvents.HOST_MUTE_ALL, () => {
+      const validation = validateHostAction(socket.id);
+      if (!validation.valid) { socket.emit(SocketEvents.ROOM_ERROR, { code: 'NOT_HOST', message: validation.error }); return; }
+      for (const p of roomManager.getParticipants(validation.roomId)) {
+        if (p.uuid !== validation.hostId) {
+          const tid = participantSockets.get(p.uuid);
+          if (tid) io.to(tid).emit(SocketEvents.HOST_MUTE, { targetUuid: p.uuid });
+        }
+      }
+    });
+
+    // -----------------------------------------------------------
+    // Screen sharing
+    // -----------------------------------------------------------
+
+    /**
+     * screen-share:start - Attempt to start sharing. Server validates:
+     * - Screen sharing is allowed by the host
+     * - No other participant is currently sharing
+     */
+    socket.on(SocketEvents.SCREEN_SHARE_START, (payload: ScreenShareStartPayload) => {
+      try {
+        const roomEntry = socketRooms.get(socket.id);
+        if (!roomEntry) {
+          socket.emit(SocketEvents.SCREEN_SHARE_BLOCKED, { reason: 'Not in a room' });
+          return;
+        }
+
+        const result = roomManager.startScreenShare(roomEntry.roomId, payload.uuid);
+        if (result.ok) {
+          // Broadcast to all participants in the room (including the sharer)
+          io.to(roomEntry.roomId).emit(SocketEvents.SCREEN_SHARE_STARTED, {
+            uuid: payload.uuid,
+          });
+        } else {
+          socket.emit(SocketEvents.SCREEN_SHARE_BLOCKED, { reason: result.error });
+        }
+      } catch (err) {
+        console.error('[signaling] Error starting screen share:', err);
+      }
+    });
+
+    /**
+     * screen-share:stop - Stop sharing.
+     */
+    socket.on(SocketEvents.SCREEN_SHARE_STOP, (payload: { uuid: string }) => {
+      try {
+        const roomEntry = socketRooms.get(socket.id);
+        if (!roomEntry) return;
+
+        roomManager.stopScreenShare(roomEntry.roomId, payload.uuid);
+        io.to(roomEntry.roomId).emit(SocketEvents.SCREEN_SHARE_STOPPED, {
+          uuid: payload.uuid,
+        });
+      } catch (err) {
+        console.error('[signaling] Error stopping screen share:', err);
+      }
+    });
+
+    // -----------------------------------------------------------
+    // Chat
+    // -----------------------------------------------------------
+
+    /**
+     * chat:message - Relay a chat message to the room.
+     * Validates: chat enabled, message length, basic sanitization.
+     */
+    socket.on(SocketEvents.CHAT_MESSAGE, (payload: ChatMessagePayload) => {
+      try {
+        const roomEntry = socketRooms.get(socket.id);
+        if (!roomEntry) return;
+
+        const room = roomManager.getRoom(roomEntry.roomId);
+        if (!room) return;
+
+        // Check if chat is enabled
+        if (!room.chatEnabled) {
+          socket.emit(SocketEvents.CHAT_DISABLED, { reason: 'Chat is disabled by the host' });
+          return;
+        }
+
+        const { message } = payload;
+
+        // Validate message
+        if (!message.text || message.text.trim().length === 0) return;
+        if (message.text.length > 2000) {
+          socket.emit(SocketEvents.ROOM_ERROR, {
+            code: 'MESSAGE_TOO_LONG',
+            message: 'Message cannot exceed 2000 characters.',
+          });
+          return;
+        }
+
+        // Don't escape HTML — React's default text rendering handles XSS prevention
+        const relayPayload: ChatMessagePayload = {
+          message: {
+            id: message.id,
+            senderUuid: message.senderUuid,
+            senderName: message.senderName,
+            text: message.text,
+            timestamp: message.timestamp,
+          },
+        };
+
+        // Broadcast to ALL participants in the room except sender
+        // (sender adds their own message locally for instant feedback)
+        socket.to(roomEntry.roomId).emit(SocketEvents.CHAT_MESSAGE, relayPayload);
+      } catch (err) {
+        console.error('[signaling] Error handling chat message:', err);
+      }
+    });
+  });
+}
+
+/**
+ * Handle a socket leaving its room(s). Uses the socketRooms tracking map
+ * instead of socket.rooms (which is empty on disconnect). Cleans up
+ * host tokens and broadcasts participant:left.
+ */
+function handleLeave(socket: Socket, io: SocketIOServer, roomManager: RoomManager): void {
+  const roomEntry = socketRooms.get(socket.id);
+  if (!roomEntry) return;
+
+  const { roomId, participantUuid } = roomEntry;
+
+  const participant = roomManager.removeParticipant(roomId, participantUuid);
+  if (participant) {
+    const leftPayload: ParticipantLeftPayload = { uuid: participant.uuid };
+    socket.to(roomId).emit(SocketEvents.PARTICIPANT_LEFT, leftPayload);
+
+    // Handle host migration if the leaving participant was the host
+    if (participant.isHost) {
+      const migration = roomManager.promoteNextHost(roomId);
+      if (migration) {
+        // Store host token for the new host so they can perform host actions
+        const newHostSocketId = participantSockets.get(migration.newHostId);
+        if (newHostSocketId) {
+          hostTokens.set(newHostSocketId, {
+            roomId,
+            hostId: migration.newHostId,
+            hostToken: migration.newHostToken,
+          });
+        }
+        io.to(roomId).emit(SocketEvents.HOST_MIGRATED, {
+          newHostId: migration.newHostId,
+          newHostToken: migration.newHostToken,
+        });
+      }
+    }
+  }
+
+  socket.leave(roomId);
+
+  // Clean up tracking
+  socketRooms.delete(socket.id);
+  participantSockets.delete(participantUuid);
+  hostTokens.delete(socket.id);
+}
