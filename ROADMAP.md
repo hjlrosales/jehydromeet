@@ -215,9 +215,23 @@ Rules:
 - [ ] Phase 10 load test: 15+ participant SFU meeting with mixed desktop/mobile
 - [ ] Cross-browser testing results logged (testing is a manual operation)
 
+### Phase 10 Implementation Notes (LiveKit SFU)
+
+- **LiveKit Server** configured in `docker/livekit.yaml` (signaling 7880, TCP relay 7881, UDP media 50000-60000)
+- **LiveKit Service** added to `docker-compose.yml` with API key/secret from environment
+- **Token endpoint** `POST /api/livekit/token` in `apps/backend/src/routes/livekit.ts`; also generated inline in `signaling.ts` for creator and joiner flows
+- **SfuTransport** (`apps/frontend/src/lib/SfuTransport.ts`) implements `MediaTransport` using `livekit-client` SDK
+- **useMediaTransport** updated to instantiate SfuTransport when `mediaMode === 'sfu'`, passing the LiveKit token
+- **SFU option** enabled in `CreateMeetingForm.tsx` with capacity label "More than 8 people (up to 50)"
+- **Environment** variables: `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_URL` added to `.env.example`
+- **LiveKit packages**: `livekit-server-sdk` (backend), `livekit-client` (frontend)
+- **TURN reuse**: Coturn and LiveKit configured with same Let's Encrypt cert paths in compose
+
+**Load test requires actual deployment with LiveKit server keys configured.**
+
 ---
 
-# Post-V1 Phases
+# Future Phases
 
 ## Phase 11 — Waiting Room & Meeting Password (next)
 
