@@ -231,7 +231,7 @@ export default function MeetRoomPage() {
         cameraEnabled: initialCamera,
       };
       // If we have a meeting password from an earlier PASSWORD_REQUIRED prompt, include it
-      const currentPassword = meetingPassword || sessionStorage.getItem('jehydro-meeting-password') || '';
+      const currentPassword = meetingPassword || '';
       if (currentPassword) {
         joinPayload.password = currentPassword;
       }
@@ -287,8 +287,12 @@ export default function MeetRoomPage() {
         setPasswordError(null);
       });
 
-      socket.on(SocketEvents.PASSWORD_INCORRECT, () => {
-        setPasswordError('Incorrect password. Please try again.');
+      socket.on(SocketEvents.PASSWORD_INCORRECT, (payload: { locked?: boolean }) => {
+        if (payload.locked) {
+          setPasswordError('Too many incorrect attempts. Please wait a moment before trying again.');
+        } else {
+          setPasswordError('Incorrect password. Please try again.');
+        }
         setState('preview');
         setNeedsPassword(true);
       });

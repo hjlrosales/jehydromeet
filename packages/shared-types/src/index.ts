@@ -302,4 +302,5 @@ export interface PasswordRequiredPayload {
 export interface PasswordIncorrectPayload {
   roomId: string;
   attemptsRemaining: number;
+  locked?: boolean;
 }
