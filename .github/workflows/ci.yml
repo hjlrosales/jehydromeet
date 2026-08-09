@@ -1,0 +1,252 @@
+# Jehydro Meet — CI (Lint, Typecheck, Build, Format)
+# Runs on every pull request alongside the E2E test suite.
+# These checks are fast (1-3 min total) and provide early feedback
+# before the heavier E2E tests finish.
+#
+# Features:
+#   - Changes detection: only typechecks changed packages
+#   - ESLint cache: persists cache across CI runs (~50% faster re-runs)
+#   - Prettier auto-fix: automatically fixes and commits formatting issues
+#   - pnpm store cache: explicit layer for faster installs
+
+name: CI
+
+on:
+  pull_request:
+    paths:
+      - 'apps/frontend/**'
+      - 'apps/backend/**'
+      - 'packages/shared-types/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/ci.yml'
+      - '.prettierrc*'
+      - '.eslintrc*'
+      - 'tsconfig.json'
+      - '**/tsconfig.json'
+      - '**/.eslintrc*'
+
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20'
+  PNPM_VERSION: '9'
+  # ESLint cache location (used across all packages)
+  ESLINT_CACHE_DIR: 'node_modules/.cache/eslint'
+
+jobs:
+  # ---------------------------------------------------------------
+  # Changes detection — determines which packages changed
+  # Uses git diff against the base branch to find affected packages.
+  # Output is consumed by typecheck to skip unaffected packages.
+  # Falls back to 'all changed' when base_ref is empty (workflow_dispatch).
+  # ---------------------------------------------------------------
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-22.04
+    timeout-minutes: 2
+    outputs:
+      backend: ${{ steps.diff.outputs.backend }}
+      frontend: ${{ steps.diff.outputs.frontend }}
+      shared: ${{ steps.diff.outputs.shared }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need full history for git diff against base branch
+          fetch-depth: 0
+
+      - name: Detect changed packages
+        id: diff
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ -z "$BASE_REF" ]; then
+            echo "⚠️ No base ref (workflow_dispatch) — assuming all packages changed"
+            echo "shared=true" >> "$GITHUB_OUTPUT"
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git fetch origin "$BASE_REF" --depth=1 2>/dev/null || true
+          CHANGED=$(git diff --name-only "origin/$BASE_REF...HEAD" 2>/dev/null || echo "")
+          echo "Changed files:"
+          echo "$CHANGED"
+          echo ""
+
+          if echo "$CHANGED" | grep -q "^packages/shared-types/"; then
+            echo "shared=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "shared=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if echo "$CHANGED" | grep -q "^apps/backend/"; then
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "backend=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if echo "$CHANGED" | grep -q "^apps/frontend/"; then
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "frontend=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ---------------------------------------------------------------
+  # Lint — ESLint with persistent cache across CI runs
+  # Cache keyed on pnpm-lock.yaml + ESLint config files
+  # Runs on all packages (independent of changes detection).
+  # ---------------------------------------------------------------
+  lint:
+    name: Lint
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm store caching is handled by actions/setup-node with cache: 'pnpm'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Restore ESLint cache
+        id: eslint-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.ESLINT_CACHE_DIR }}
+          key: eslint-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', '**/.eslintrc*', '**/eslint.config.*') }}
+          restore-keys: |
+            eslint-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            eslint-${{ runner.os }}-
+
+      - name: Validate environment variables (base)
+        run: node scripts/validate-env.js --mode base
+
+      - name: Run ESLint (with cache)
+        run: |
+          # ESLint cache is baked into package lint scripts via --cache
+          # (see apps/backend and packages/shared-types package.json)
+          pnpm -r lint
+
+  # ---------------------------------------------------------------
+  # Typecheck — tsc --noEmit, only on changed packages
+  # Backend/frontend also typecheck when shared-types changes
+  # ---------------------------------------------------------------
+  typecheck:
+    name: Typecheck
+    needs: changes
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      # When shared-types changed, typecheck it first since backend/frontend depend on it
+      - name: Typecheck shared-types
+        if: ${{ needs.changes.outputs.shared == 'true' }}
+        run: pnpm --filter @jehydro/shared-types typecheck
+
+      - name: Typecheck backend
+        if: ${{ needs.changes.outputs.backend == 'true' || needs.changes.outputs.shared == 'true' }}
+        run: pnpm --filter @jehydro/backend typecheck
+
+      - name: Typecheck frontend
+        if: ${{ needs.changes.outputs.frontend == 'true' || needs.changes.outputs.shared == 'true' }}
+        run: pnpm --filter @jehydro/frontend typecheck
+
+      - name: No packages changed
+        if: ${{ needs.changes.outputs.backend == 'false' && needs.changes.outputs.frontend == 'false' && needs.changes.outputs.shared == 'false' }}
+        run: echo "✅ No changed packages — typecheck skipped"
+
+  # ---------------------------------------------------------------
+  # Build — compile all packages (tsc + next build)
+  # Runs on all packages (independent of changes detection).
+  # ---------------------------------------------------------------
+  build:
+    name: Build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build all packages
+        run: pnpm build
+
+  # ---------------------------------------------------------------
+  # Format — Prettier check with auto-fix
+  # If formatting issues are found, Prettier auto-fixes them and
+  # commits the fixes back to the PR branch.
+  # ---------------------------------------------------------------
+  format:
+    name: Format
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Check Prettier formatting
+        id: format-check
+        continue-on-error: true
+        run: pnpm format:check
+
+      - name: Auto-fix formatting
+        if: steps.format-check.outcome == 'failure'
+        run: pnpm format
+
+      - name: Commit auto-fixes
+        if: steps.format-check.outcome == 'failure'
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: 'style: auto-format Prettier'
+          branch: ${{ github.head_ref }}
+          commit_user_name: 'github-actions[bot]'
+          commit_user_email: 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Format check passed
+        if: steps.format-check.outcome == 'success'
+        run: echo "✅ All files are correctly formatted"

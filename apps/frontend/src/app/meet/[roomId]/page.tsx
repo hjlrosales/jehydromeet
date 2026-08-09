@@ -9,6 +9,10 @@ import { useMediaTransport } from '@/hooks/useMediaTransport';
 import { consumePendingRoomState } from '@/lib/roomState';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { JoinPreview } from '@/components/JoinPreview';
+import { BackgroundEffectToggle } from '@/components/BackgroundEffectToggle';
+import { Whiteboard } from '@/components/Whiteboard';
+import { PollsPanel } from '@/components/PollsPanel';
+import { BreakoutRoomsPanel } from '@/components/BreakoutRoomsPanel';
 import { ParticipantsPanel } from '@/components/ParticipantsPanel';
 import { ChatPanel } from '@/components/ChatPanel';
 import { useToast } from '@/hooks/useToast';
@@ -37,7 +41,12 @@ export default function MeetRoomPage() {
   const [roomInfo, setRoomInfo] = useState<RoomJoinedPayload | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
   const [chatPanelOpen, setChatPanelOpen] = useState(false);
+  const [whiteboardOpen, setWhiteboardOpen] = useState(false);
+  const [pollsOpen, setPollsOpen] = useState(false);
+  const [breakoutOpen, setBreakoutOpen] = useState(false);
   const [meetingLocked, setMeetingLocked] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [completedRecordings, setCompletedRecordings] = useState<Array<{id: string; durationMs?: number}>>([]);
   const [meetingPassword, setMeetingPassword] = useState('');
   const [needsPassword, setNeedsPassword] = useState(false);
   const [passwordError, setPasswordError] = useState<string | null>(null);
@@ -152,6 +161,24 @@ export default function MeetRoomPage() {
       addToast(payload.reason, 'error');
       setTimeout(() => router.push('/'), 2000);
     };
+    // Recording events
+    const onRecordingStarted = () => {
+      setIsRecording(true);
+      addToast('Recording started', 'info');
+    };
+    const onRecordingStopped = (payload: { roomId: string; recording: { id: string; durationMs?: number } }) => {
+      setIsRecording(false);
+      const recording = { id: payload.recording.id, durationMs: payload.recording.durationMs };
+      setCompletedRecordings((prev) => [...prev, recording]);
+      const durationStr = payload.recording.durationMs
+        ? `${Math.round(payload.recording.durationMs / 1000 / 60)}m`
+        : '';
+      addToast(`Recording saved${durationStr ? ` (${durationStr})` : ''}`, 'success');
+    };
+    const onRecordingError = (payload: { error: string }) => {
+      addToast(payload.error, 'error');
+    };
+
     const onHostMute = () => {
       addToast('You were muted by the host', 'warning');
       // Force mute via ref (avoids stale closure on media.micEnabled)
@@ -171,6 +198,9 @@ export default function MeetRoomPage() {
     socket.on(SocketEvents.ROOM_ENDED, onRoomEnded);
     socket.on(SocketEvents.PARTICIPANT_REMOVED, onParticipantRemoved);
     socket.on(SocketEvents.HOST_MUTE, onHostMute);
+    socket.on(SocketEvents.RECORDING_STARTED, onRecordingStarted);
+    socket.on(SocketEvents.RECORDING_STOPPED, onRecordingStopped);
+    socket.on(SocketEvents.RECORDING_ERROR, onRecordingError);
 
     return () => {
       socket.off(SocketEvents.PARTICIPANT_JOINED, onJoined);
@@ -184,6 +214,9 @@ export default function MeetRoomPage() {
       socket.off(SocketEvents.ROOM_ENDED, onRoomEnded);
       socket.off(SocketEvents.PARTICIPANT_REMOVED, onParticipantRemoved);
       socket.off(SocketEvents.HOST_MUTE, onHostMute);
+      socket.off(SocketEvents.RECORDING_STARTED, onRecordingStarted);
+      socket.off(SocketEvents.RECORDING_STOPPED, onRecordingStopped);
+      socket.off(SocketEvents.RECORDING_ERROR, onRecordingError);
     };
   }, [socket, state, addToast]);
 
@@ -481,6 +514,9 @@ export default function MeetRoomPage() {
   // In Meeting — Full UI
   // ---------------------------------------------------------
 
+  // Determine if recording is available (SFU mode)
+  const recordingAvailable = roomInfo?.mediaMode === 'sfu';
+
   const totalParticipants = 1 + media.remoteStreams.length;
 
   // Compute grid columns based on participant count
@@ -499,6 +535,41 @@ export default function MeetRoomPage() {
     <div className="relative flex min-h-screen flex-col bg-slate-900">
       {/* Toast notifications */}
       <ToastContainer toasts={toasts} onDismiss={removeToast} />
+
+      {/* Whiteboard overlay */}
+      {whiteboardOpen && socket && (
+        <Whiteboard
+          socket={socket}
+          roomId={roomId}
+          myUuid={roomInfo?.yourUuid ?? ''}
+          isHost={isHost}
+          onClose={() => setWhiteboardOpen(false)}
+        />
+      )}
+
+      {/* Polls overlay */}
+      {pollsOpen && socket && (
+        <PollsPanel
+          socket={socket}
+          roomId={roomId}
+          myUuid={roomInfo?.yourUuid ?? ''}
+          myDisplayName={media.allParticipants[0]?.displayName ?? 'You'}
+          isHost={isHost}
+          onClose={() => setPollsOpen(false)}
+        />
+      )}
+
+      {/* Breakout Rooms overlay */}
+      {breakoutOpen && socket && (
+        <BreakoutRoomsPanel
+          socket={socket}
+          roomId={roomId}
+          myUuid={roomInfo?.yourUuid ?? ''}
+          isHost={isHost}
+          participants={media.allParticipants}
+          onClose={() => setBreakoutOpen(false)}
+        />
+      )}
 
       {/* Chat Panel */}
       {chatPanelOpen && (
@@ -558,6 +629,45 @@ export default function MeetRoomPage() {
         ))}
       </div>
 
+      {/* Recording indicator + completed recordings */}
+      <div className="fixed left-1/2 top-4 z-50 flex -translate-x-1/2 flex-col items-center gap-2">
+        {isRecording && (
+          <div className="flex items-center gap-2 rounded-full bg-red-600/90 px-4 py-2 text-sm font-medium text-white shadow-lg backdrop-blur-sm">
+            <span className="flex h-3 w-3">
+              <span className="absolute inline-flex h-3 w-3 animate-ping rounded-full bg-red-300 opacity-75" />
+              <span className="relative inline-flex h-3 w-3 rounded-full bg-red-400" />
+            </span>
+            <span>Recording</span>
+          </div>
+        )}
+        {completedRecordings.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 rounded-full bg-slate-800/90 px-4 py-2 shadow-lg backdrop-blur-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 text-emerald-400">
+              <path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v11.75A2.75 2.75 0 0016.75 18h-12A2.75 2.75 0 012 15.25V3.5z" />
+              <path d="M3 3.5a.5.5 0 01.5-.5h9a.5.5 0 01.5.5v.5H3v-.5z" />
+            </svg>
+            {completedRecordings.map((r, i) => {
+              const downloadUrl = `/api/recordings/${roomId}/download/${r.id}`;
+              return (
+                <a
+                  key={r.id}
+                  href={downloadUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1 rounded-full bg-emerald-700/50 px-3 py-1 text-xs font-medium text-emerald-200 transition-all hover:bg-emerald-700 hover:text-white"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-3 w-3">
+                    <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.614L6.295 8.235a.75.75 0 10-1.09 1.03l4.25 4.5a.75.75 0 001.09 0l4.25-4.5a.75.75 0 00-1.09-1.03l-2.955 3.129V2.75z" />
+                    <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
+                  </svg>
+                  {i === 0 ? 'Recording' : `Recording ${i + 1}`}
+                </a>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       {/* Bottom toolbar */}
       <MeetingToolbar
         micEnabled={media.micEnabled}
@@ -567,12 +677,19 @@ export default function MeetRoomPage() {
         totalParticipants={totalParticipants}
         isHost={isHost}
         meetingLocked={meetingLocked}
+        isRecording={isRecording}
+        recordingAvailable={recordingAvailable}
         onToggleMic={media.toggleMic}
         onToggleCamera={media.toggleCamera}
         onLeave={async () => {
           await media.leave();
           router.push('/');
         }}
+        currentBackgroundEffect={media.currentBackgroundEffect}
+        onBackgroundEffectChange={media.setBackgroundEffect}
+        onWhiteboard={() => setWhiteboardOpen((prev) => !prev)}
+        onPolls={() => setPollsOpen((prev) => !prev)}
+        onBreakoutRooms={() => setBreakoutOpen((prev) => !prev)}
         onTogglePanel={() => setPanelOpen((prev) => !prev)}
         onShareScreen={media.isSharingScreen ? media.stopScreenShare : media.startScreenShare}
         onChat={() => setChatPanelOpen((prev) => !prev)}
@@ -581,6 +698,8 @@ export default function MeetRoomPage() {
         onUnlockMeeting={() => socket?.emit(SocketEvents.HOST_UNLOCK)}
         onEndMeeting={() => socket?.emit(SocketEvents.HOST_END)}
         onMuteAll={() => socket?.emit(SocketEvents.HOST_MUTE_ALL)}
+        onStartRecording={() => socket?.emit(SocketEvents.RECORDING_START)}
+        onStopRecording={() => socket?.emit(SocketEvents.RECORDING_STOP)}
       />
     </div>
   );
@@ -733,9 +852,16 @@ interface MeetingToolbarProps {
   totalParticipants: number;
   isHost: boolean;
   meetingLocked: boolean;
+  isRecording: boolean;
+  recordingAvailable: boolean;
   onToggleMic: () => void;
   onToggleCamera: () => void;
   onLeave: () => void;
+  currentBackgroundEffect: 'none' | 'blur' | 'image';
+  onBackgroundEffectChange: (effect: 'none' | 'blur' | 'image', imageId?: string) => void;
+  onWhiteboard: () => void;
+  onPolls: () => void;
+  onBreakoutRooms: () => void;
   onTogglePanel: () => void;
   onShareScreen: () => void;
   onChat: () => void;
@@ -744,6 +870,8 @@ interface MeetingToolbarProps {
   onUnlockMeeting: () => void;
   onEndMeeting: () => void;
   onMuteAll: () => void;
+  onStartRecording: () => void;
+  onStopRecording: () => void;
 }
 
 function MeetingToolbar({
@@ -754,9 +882,16 @@ function MeetingToolbar({
   totalParticipants,
   isHost,
   meetingLocked,
+  isRecording,
+  recordingAvailable,
   onToggleMic,
   onToggleCamera,
   onLeave,
+  currentBackgroundEffect,
+  onBackgroundEffectChange,
+  onWhiteboard,
+  onPolls,
+  onBreakoutRooms,
   onTogglePanel,
   onShareScreen,
   onChat,
@@ -765,6 +900,8 @@ function MeetingToolbar({
   onUnlockMeeting,
   onEndMeeting,
   onMuteAll,
+  onStartRecording,
+  onStopRecording,
 }: MeetingToolbarProps) {
   return (
     <div className="flex items-center justify-center gap-1.5 border-t border-slate-700 bg-slate-800/95 px-2 py-3 backdrop-blur-sm sm:gap-3 sm:px-6">
@@ -850,9 +987,79 @@ function MeetingToolbar({
       {/* Spacer */}
       <div className="mx-1 h-8 w-px bg-slate-700 sm:mx-2" />
 
+      {/* Record button (host only, SFU rooms only) */}
+      {isHost && recordingAvailable && (
+        <ToolbarButton
+          active={isRecording}
+          activeLabel="Stop"
+          inactiveLabel="Record"
+          inactiveColor="red"
+          onClick={isRecording ? onStopRecording : onStartRecording}
+          title={isRecording ? 'Stop recording' : 'Start recording'}
+        >
+          {isRecording ? (
+            <>
+              <rect x="6" y="6" width="12" height="12" rx="2" />
+              <line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" strokeWidth="2" />
+            </>
+          ) : (
+            <circle cx="12" cy="12" r="8" />
+          )}
+        </ToolbarButton>
+      )}
+
+      {/* Background effect toggle */}
+      <BackgroundEffectToggle
+        currentEffect={currentBackgroundEffect}
+        onEffectChange={onBackgroundEffectChange}
+      />
+
+      {/* Whiteboard */}
+      <ToolbarButton
+        active={false}
+        activeLabel=""
+        inactiveLabel="Board"
+        inactiveColor="slate"
+        onClick={onWhiteboard}
+        title="Open whiteboard"
+      >
+        <path d="M6 4h12a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2z" />
+        <line x1="8" y1="8" x2="8" y2="16" stroke="currentColor" strokeWidth="2" />
+        <line x1="12" y1="8" x2="12" y2="16" stroke="currentColor" strokeWidth="2" />
+        <line x1="16" y1="8" x2="16" y2="16" stroke="currentColor" strokeWidth="2" />
+      </ToolbarButton>
+
+      {/* Polls */}
+      <ToolbarButton
+        active={false}
+        activeLabel=""
+        inactiveLabel="Polls"
+        inactiveColor="slate"
+        onClick={onPolls}
+        title="Open polls"
+      >
+        <path d="M3 3v18h18" />
+        <line x1="7" y1="12" x2="7" y2="18" stroke="currentColor" strokeWidth="2" />
+        <line x1="12" y1="9" x2="12" y2="18" stroke="currentColor" strokeWidth="2" />
+        <line x1="17" y1="6" x2="17" y2="18" stroke="currentColor" strokeWidth="2" />
+      </ToolbarButton>
+
+      {/* Breakout Rooms */}
+      <ToolbarButton
+        active={false}
+        activeLabel=""
+        inactiveLabel="Rooms"
+        inactiveColor="slate"
+        onClick={onBreakoutRooms}
+        title={isHost ? 'Manage breakout rooms' : 'View breakout rooms'}
+      >
+        <path d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
+      </ToolbarButton>
+
       {/* Host-only controls */}
       {isHost && (
         <>
+          <div className="mx-1 h-8 w-px bg-slate-700 sm:mx-2" />
           {/* Lock/Unlock */}
           <ToolbarButton
             active={meetingLocked}

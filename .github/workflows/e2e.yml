@@ -1,0 +1,209 @@
+# Jehydro Meet — E2E Test Suite (Multi-Browser)
+# Runs the waiting-room Playwright tests on every pull request
+# across Chromium, Firefox, and WebKit (3 parallel matrix jobs).
+#
+# The playwright.config.cjs handles starting both servers via its
+# webServer config. Each matrix job spins its own pair of servers.
+#
+# After all matrix jobs finish, results are merged and posted
+# as a consolidated PR comment with per-browser breakdown.
+#
+# Environment:
+#   - Ubuntu 22.04 (GitHub-hosted runner)
+#   - Node 20, pnpm 9
+#   - Playwright browsers (one per matrix job)
+
+name: E2E — Waiting Room
+
+on:
+  pull_request:
+    paths:
+      - 'apps/frontend/**'
+      - 'apps/backend/**'
+      - 'packages/shared-types/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/e2e.yml'
+
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20'
+  PNPM_VERSION: '9'
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '0'
+
+jobs:
+  # ---------------------------------------------------------------
+  # Per-browser E2E test matrix
+  # ---------------------------------------------------------------
+  e2e:
+    name: '${{ matrix.browser }}'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+
+    steps:
+      # -----------------------------------------------------------
+      # 1. Checkout
+      # -----------------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------
+      # 2. Setup pnpm
+      # -----------------------------------------------------------
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      # -----------------------------------------------------------
+      # 3. Setup Node.js with pnpm cache
+      # -----------------------------------------------------------
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      # -----------------------------------------------------------
+      # 4. Install dependencies
+      # -----------------------------------------------------------
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # -----------------------------------------------------------
+      # 4b. Validate environment (base + e2e modes)
+      # -----------------------------------------------------------
+      - name: Validate environment variables
+        run: node scripts/validate-env.js --mode e2e
+
+      # -----------------------------------------------------------
+      # 5. Cache Playwright browser binaries (per browser)
+      # -----------------------------------------------------------
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ matrix.browser }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      # -----------------------------------------------------------
+      # 6. Install Playwright browser (${{ matrix.browser }})
+      # -----------------------------------------------------------
+      - name: Install ${{ matrix.browser }} browser
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        working-directory: apps/frontend
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+
+      # -----------------------------------------------------------
+      # 7. Run E2E tests (${{ matrix.browser }})
+      # -----------------------------------------------------------
+      - name: Run E2E tests
+        working-directory: apps/frontend
+        run: npx playwright test e2e/waiting-room.spec.ts --project=${{ matrix.browser }} --reporter=html,json,list
+        env:
+          CI: 'true'
+
+      # -----------------------------------------------------------
+      # 8a. Upload JSON test results (always — for PR comment merge)
+      # -----------------------------------------------------------
+      - name: Upload JSON test results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-json-${{ matrix.browser }}
+          path: apps/frontend/test-results.json
+          retention-days: 7
+          if-no-files-found: warn
+
+      # -----------------------------------------------------------
+      # 8b. Upload HTML report + test artifacts on failure
+      # -----------------------------------------------------------
+      - name: Upload HTML report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ matrix.browser }}-${{ github.run_id }}
+          path: apps/frontend/playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload test traces (screenshots, traces)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results-${{ matrix.browser }}-${{ github.run_id }}
+          path: apps/frontend/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------
+  # PR comment — merge per-browser results and post summary
+  # ---------------------------------------------------------------
+  pr-comment:
+    name: Test summary
+    if: ${{ github.event_name == 'pull_request' && always() }}
+    needs: e2e
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    permissions:
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all JSON results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: playwright-json-*
+          path: raw-results/
+
+      - name: Merge per-browser reports
+        id: merge
+        run: |
+          # Find all test-results.json files in subdirectories
+          INPUT_FILES=$(find raw-results -name 'test-results.json' -type f | tr '\n' ',' | sed 's/,$//')
+          echo "Input files: $INPUT_FILES"
+          if [ -z "$INPUT_FILES" ]; then
+            echo "No test-results.json files found"
+            exit 0
+          fi
+          node scripts/merge-playwright-reports.js --input="$INPUT_FILES" --output=merged/test-results.json
+
+      - name: Generate PR comment
+        id: summary
+        uses: daun/playwright-report-summary@v4
+        with:
+          report-file: merged/test-results.json
+          create-comment: false
+
+      - name: Post or update PR comment
+        if: ${{ steps.summary.outcome == 'success' }}
+        uses: marocchino/sticky-pull-request-comment@v3
+        with:
+          header: e2e-test-results
+          message: |
+            ## E2E Test Results
+
+            ${{ steps.summary.outputs.summary }}
+
+            <details>
+            <summary>ℹ️ Report details</summary>
+
+            - **Workflow:** ${{ github.workflow }}
+            - **Run:** #${{ github.run_number }}
+            - **Commit:** ${{ github.sha }}
+            - **Browsers:** Chromium, Firefox, WebKit
+
+            _This comment is automatically updated on every push._
+            </details>

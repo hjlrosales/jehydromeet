@@ -7,7 +7,7 @@
   "types": "./src/index.ts",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src --ext .ts"
+    "lint": "eslint src --ext .ts --cache --cache-location node_modules/.cache/eslint/shared-types/"
   },
   "devDependencies": {
     "typescript": "^5.4.5",

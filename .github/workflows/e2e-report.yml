@@ -1,0 +1,118 @@
+# Jehydro Meet — Playwright Report on GitHub Pages
+# Runs the waiting-room E2E tests on every push to main,
+# generates the Playwright HTML report, and deploys it to
+# GitHub Pages so the team can browse failed test results online.
+#
+# URL: https://<org>.github.io/<repo>/
+#
+# Prerequisites:
+#   - Go to repo Settings > Pages > Source: "GitHub Actions"
+
+name: E2E Report — Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/frontend/**'
+      - 'apps/backend/**'
+      - 'packages/shared-types/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/e2e-report.yml'
+
+  # Allow manual trigger to re-deploy the latest report
+  workflow_dispatch:
+
+  # Run nightly so the report stays fresh even without pushes
+  schedule:
+    - cron: '0 6 * * *'  # 06:00 UTC daily
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20'
+  PNPM_VERSION: '9'
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '0'
+
+jobs:
+  # ---------------------------------------------------------------
+  # Run E2E tests and generate the HTML report
+  # ---------------------------------------------------------------
+  test:
+    name: Run tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Validate environment variables (base + e2e)
+        run: node scripts/validate-env.js --mode e2e
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-all-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install all browsers (chromium, firefox, webkit)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        working-directory: apps/frontend
+        run: npx playwright install --with-deps chromium firefox webkit
+
+      - name: Run E2E tests (all browsers)
+        working-directory: apps/frontend
+        # Run all 3 projects sequentially in a single execution.
+        # The HTML reporter generates a combined report with
+        # cross-browser results included.
+        run: npx playwright test e2e/waiting-room.spec.ts --project=chromium --project=firefox --project=webkit --reporter=html,list
+        env:
+          CI: 'true'
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          name: playwright-report
+          path: apps/frontend/playwright-report/
+
+  # ---------------------------------------------------------------
+  # Deploy the report to GitHub Pages
+  # ---------------------------------------------------------------
+  deploy:
+    name: Deploy to Pages
+    if: ${{ always() }}
+    needs: test
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/deploy-pages@v4
+        id: deployment
+        with:
+          artifact_name: playwright-report

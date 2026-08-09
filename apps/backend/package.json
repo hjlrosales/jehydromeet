@@ -8,21 +8,29 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src --ext .ts"
+    "lint": "eslint src --ext .ts --cache --cache-location node_modules/.cache/eslint/backend/"
   },
   "dependencies": {
     "@jehydro/shared-types": "workspace:*",
+    "@prisma/client": "^6.4.1",
+    "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
     "livekit-server-sdk": "^2.9.0",
+    "multer": "^1.4.5-lts.1",
     "socket.io": "^4.7.5",
     "uuid": "^9.0.1"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.6",
+    "@types/multer": "^1.4.11",
     "@types/node": "^20.12.12",
     "@types/uuid": "^9.0.8",
+    "prisma": "^6.4.1",
     "tsx": "^4.11.0",
     "typescript": "^5.4.5",
     "eslint": "^8.57.0",

@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
-import type { MediaMode, Participant, WaitingParticipant, Room as RoomState } from '@jehydro/shared-types';
+import type { MediaMode, Participant, WaitingParticipant, Recording, Poll, BreakoutRoom, Room as RoomState } from '@jehydro/shared-types';
 
 // -----------------------------------------------------------
 // In-memory room store
@@ -64,7 +64,7 @@ export class RoomManager {
       connectionState: 'connected',
     };
 
-    const room: RoomState & { password?: string; waitingRoom: boolean; pendingParticipants: Map<string, WaitingParticipant> } = {
+    const room: RoomState & { password?: string; waitingRoom: boolean; pendingParticipants: Map<string, WaitingParticipant>; isRecording: boolean; recordingEgressId: string | null; recordingStartedAt: number | null; recordings: Recording[] } = {
       roomId,
       mediaMode,
       hostId,
@@ -77,6 +77,10 @@ export class RoomManager {
       password: undefined,
       waitingRoom: false,
       pendingParticipants: new Map(),
+      isRecording: false,
+      recordingEgressId: null,
+      recordingStartedAt: null,
+      recordings: [],
     };
 
     rooms.set(roomId, room);
@@ -210,6 +214,155 @@ export class RoomManager {
 
     console.log(`[rooms] ${participant.displayName} (${participant.uuid}) admitted to room ${roomId}`);
     return { participant };
+  }
+
+  /**
+   * Create a poll in a room (host only).
+   */
+  createPoll(roomId: string, createdBy: string, question: string, optionsText: string[]): Poll | null {
+    const room = rooms.get(roomId);
+    if (!room) return null;
+
+    const r = room as any;
+    if (!r.polls) r.polls = [];
+
+    const poll: Poll = {
+      id: uuidv4(),
+      createdBy,
+      question,
+      options: optionsText.map((text) => ({
+        id: uuidv4(),
+        text,
+        votes: [],
+      })),
+      createdAt: Date.now(),
+      status: 'active',
+    };
+
+    r.polls.push(poll);
+    return poll;
+  }
+
+  /**
+   * Vote on a poll option.
+   */
+  votePoll(roomId: string, pollId: string, optionId: string, voterUuid: string): Poll | null {
+    const room = rooms.get(roomId);
+    if (!room) return null;
+    const r = room as any;
+    if (!r.polls) return null;
+
+    const poll = r.polls.find((p: Poll) => p.id === pollId) as Poll | undefined;
+    if (!poll || poll.status === 'closed') return null;
+
+    // Remove previous vote from this voter if any
+    for (const opt of poll.options) {
+      opt.votes = opt.votes.filter((v) => v !== voterUuid);
+    }
+
+    // Add vote to the selected option
+    const option = poll.options.find((o) => o.id === optionId);
+    if (!option) return null;
+    option.votes.push(voterUuid);
+
+    return poll;
+  }
+
+  /**
+   * Close a poll.
+   */
+  closePoll(roomId: string, pollId: string): Poll | null {
+    const room = rooms.get(roomId);
+    if (!room) return null;
+    const r = room as any;
+    if (!r.polls) return null;
+
+    const poll = r.polls.find((p: Poll) => p.id === pollId) as Poll | undefined;
+    if (!poll || poll.status === 'closed') return null;
+
+    poll.status = 'closed';
+    poll.closedAt = Date.now();
+    return poll;
+  }
+
+  /**
+   * Get all polls in a room.
+   */
+  getPolls(roomId: string): Poll[] {
+    const room = rooms.get(roomId);
+    if (!room) return [];
+    const r = room as any;
+    return r.polls ?? [];
+  }
+
+  /**
+   * Admit ALL waiting participants into the meeting.
+   * Returns an array of successfully admitted participants.
+   * Respects room capacity: admits only up to the remaining capacity.
+   * Overflow participants remain in the pending queue.
+   */
+  admitAllPendingParticipants(roomId: string): { participants: Participant[] } {
+    const room = rooms.get(roomId);
+    if (!room) return { participants: [] };
+
+    const roomAny = room as any;
+    if (!roomAny.pendingParticipants || roomAny.pendingParticipants.size === 0) {
+      return { participants: [] };
+    }
+
+    const capacity = CAPACITY[room.mediaMode];
+    const remainingCapacity = capacity - room.participants.size;
+    if (remainingCapacity <= 0) {
+      // No room at all — keep all pending and return empty
+      return { participants: [] };
+    }
+
+    const admitted: Participant[] = [];
+    const pendings = Array.from(roomAny.pendingParticipants.values());
+
+    for (const pending of pendings) {
+      // If we've reached capacity, stop admitting; remaining stay in waiting
+      if (admitted.length >= remainingCapacity) break;
+
+      roomAny.pendingParticipants.delete(pending.uuid);
+
+      const participant: Participant = {
+        uuid: pending.uuid,
+        displayName: pending.displayName,
+        joinedAt: Date.now(),
+        micEnabled: true,
+        cameraEnabled: true,
+        isSharingScreen: false,
+        isHost: false,
+        connectionState: 'connected',
+      };
+      room.participants.set(participant.uuid, participant);
+      admitted.push(participant);
+
+      console.log(`[rooms] ${participant.displayName} (${participant.uuid}) admitted to room ${roomId} (bulk)`);
+    }
+
+    return { participants: admitted };
+  }
+
+  /**
+   * Deny (remove) ALL waiting participants from the waiting room.
+   * Returns an array of removed pending participants for cleanup.
+   */
+  denyAllPendingParticipants(roomId: string): { denied: WaitingParticipant[] } {
+    const room = rooms.get(roomId);
+    if (!room) return { denied: [] };
+
+    const roomAny = room as any;
+    if (!roomAny.pendingParticipants || roomAny.pendingParticipants.size === 0) {
+      return { denied: [] };
+    }
+
+    const denied = Array.from(roomAny.pendingParticipants.values());
+    roomAny.pendingParticipants.clear();
+
+    console.log(`[rooms] Denied ${denied.length} waiting participant(s) from room ${roomId} (bulk)`);
+    return { denied };
   }
 
   /**
@@ -474,5 +627,232 @@ export class RoomManager {
     if (!room) return false;
     if (room.hostId !== hostId) return false;
     return true;
+  }
+
+  // -----------------------------------------------------------
+  // Recording state
+  // -----------------------------------------------------------
+
+  /**
+   * Set the recording state for a room.
+   */
+  setRecordingState(roomId: string, isRecording: boolean, egressId?: string): boolean {
+    const room = rooms.get(roomId);
+    if (!room) return false;
+    const r = room as any;
+    r.isRecording = isRecording;
+    if (isRecording && egressId) {
+      r.recordingEgressId = egressId;
+      r.recordingStartedAt = Date.now();
+    }
+    if (!isRecording) {
+      r.recordingEgressId = null;
+    }
+    return true;
+  }
+
+  /**
+   * Check if a room is currently recording.
+   */
+  isRecording(roomId: string): boolean {
+    const room = rooms.get(roomId);
+    return !!((room as any)?.isRecording);
+  }
+
+  /**
+   * Add a completed recording to the room's recording history.
+   */
+  addRecording(roomId: string, recording: Recording): boolean {
+    const room = rooms.get(roomId);
+    if (!room) return false;
+    const r = room as any;
+    if (!r.recordings) r.recordings = [];
+    r.recordings.push(recording);
+    return true;
+  }
+
+  /**
+   * Get all recordings for a room.
+   */
+  getRecordings(roomId: string): Recording[] {
+    const room = rooms.get(roomId);
+    if (!room) return [];
+    return ((room as any)?.recordings ?? []) as Recording[];
+  }
+
+  /**
+   * Get the current recording egress ID for a room.
+   */
+  getRecordingEgressId(roomId: string): string | null {
+    const room = rooms.get(roomId);
+    return (room as any)?.recordingEgressId ?? null;
+  }
+
+  /**
+   * Get the LiveKit room name for a given room ID.
+   * In our system, the room ID IS the LiveKit room name.
+   */
+  getLiveKitRoomName(roomId: string): string | null {
+    const room = rooms.get(roomId);
+    if (!room) return null;
+    return room.roomId;
+  }
+
+  /**
+   * Check if recording is available (only SFU rooms can record).
+   */
+  canRecord(roomId: string): boolean {
+    const room = rooms.get(roomId);
+    if (!room) return false;
+    return room.mediaMode === 'sfu';
+  }
+
+  // -----------------------------------------------------------
+  // Breakout Rooms
+  // -----------------------------------------------------------
+
+  /**
+   * Create N breakout rooms and auto-assign participants evenly.
+   * Only the host can trigger this.
+   * Returns the new breakout state, or null if breakouts are already active.
+   */
+  createBreakoutRooms(roomId: string, roomCount: number): {
+    state: { isActive: boolean; rooms: BreakoutRoom[]; assignments: Record<string, string> };
+  } | null {
+    const room = rooms.get(roomId);
+    if (!room) return null;
+
+    const r = room as any;
+
+    // Clamp room count
+    const count = Math.max(2, Math.min(8, roomCount));
+
+    // Check if breakouts are already active
+    if (r.breakoutActive) return null;
+
+    // Get all non-host participants
+    const participants = Array.from(room.participants.values()).filter((p) => !p.isHost);
+
+    if (participants.length === 0) {
+      // No participants to assign, but still create empty rooms (host can assign manually)
+    }
+
+    // Create breakout rooms with auto-generated names
+    const breakoutRooms: BreakoutRoom[] = [];
+    for (let i = 0; i < count; i++) {
+      breakoutRooms.push({
+        id: `breakout-${i + 1}`,
+        name: `Room ${i + 1}`,
+        participantUuids: [],
+      });
+    }
+
+    // Auto-split participants evenly across rooms
+    const assignments: Record<string, string> = {};
+    for (let i = 0; i < participants.length; i++) {
+      const roomIdx = i % count;
+      const breakoutId = breakoutRooms[roomIdx]!.id;
+      breakoutRooms[roomIdx]!.participantUuids.push(participants[i]!.uuid);
+      assignments[participants[i]!.uuid] = breakoutId;
+    }
+
+    // Store state on the room
+    r.breakoutActive = true;
+    r.breakoutRooms = breakoutRooms;
+    r.breakoutAssignments = assignments;
+
+    console.log(`[rooms] Created ${count} breakout rooms in room ${roomId}`);
+
+    return {
+      state: {
+        isActive: true,
+        rooms: breakoutRooms,
+        assignments,
+      },
+    };
+  }
+
+  /**
+   * Assign a participant to a breakout room.
+   */
+  assignToBreakout(roomId: string, participantUuid: string, breakoutRoomId: string): boolean {
+    const room = rooms.get(roomId);
+    if (!room) return false;
+
+    const r = room as any;
+    if (!r.breakoutActive || !r.breakoutRooms) return false;
+
+    // Find the breakout room
+    const breakout = r.breakoutRooms.find((br: BreakoutRoom) => br.id === breakoutRoomId) as BreakoutRoom | undefined;
+    if (!breakout) return false;
+
+    // Remove from any current breakout
+    const currentRoomId = r.breakoutAssignments[participantUuid];
+    if (currentRoomId) {
+      const currentRoom = r.breakoutRooms.find((br: BreakoutRoom) => br.id === currentRoomId) as BreakoutRoom | undefined;
+      if (currentRoom) {
+        currentRoom.participantUuids = currentRoom.participantUuids.filter((u: string) => u !== participantUuid);
+      }
+    }
+
+    // Add to new breakout
+    breakout.participantUuids.push(participantUuid);
+    r.breakoutAssignments[participantUuid] = breakoutRoomId;
+
+    return true;
+  }
+
+  /**
+   * Get the current breakout state for a room.
+   */
+  getBreakoutState(roomId: string): {
+    isActive: boolean;
+    rooms: BreakoutRoom[];
+    assignments: Record<string, string>;
+  } | null {
+    const room = rooms.get(roomId);
+    if (!room) return null;
+
+    const r = room as any;
+    if (!r.breakoutActive) {
+      return { isActive: false, rooms: [], assignments: {} };
+    }
+
+    return {
+      isActive: true,
+      rooms: r.breakoutRooms ?? [],
+      assignments: r.breakoutAssignments ?? {},
+    };
+  }
+
+  /**
+   * Close all breakout rooms and return participants to the main room.
+   */
+  closeBreakoutRooms(roomId: string): boolean {
+    const room = rooms.get(roomId);
+    if (!room) return false;
+
+    const r = room as any;
+    if (!r.breakoutActive) return false;
+
+    r.breakoutActive = false;
+    r.breakoutRooms = [];
+    r.breakoutAssignments = {};
+
+    console.log(`[rooms] Closed breakout rooms in room ${roomId}`);
+    return true;
+  }
+
+  /**
+   * Get the breakout room ID for a participant (or null if not in a breakout).
+   */
+  getParticipantBreakoutRoom(roomId: string, participantUuid: string): string | null {
+    const room = rooms.get(roomId);
+    if (!room) return null;
+
+    const r = room as any;
+    if (!r.breakoutActive) return null;
+
+    return r.breakoutAssignments?.[participantUuid] ?? null;
   }
 }

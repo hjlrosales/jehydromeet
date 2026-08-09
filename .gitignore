@@ -7,3 +7,16 @@ dist/
 .DS_Store
 coverage/
 .turbo/
+
+# pnpm local store (custom store-dir for network-drive dev, not for VCS)
+.pnpm-store-custom/
+
+# Playwright output
+apps/frontend/test-results/
+apps/frontend/test-results (*)/
+apps/frontend/playwright-report/
+apps/frontend/blob-report/
+
+# Uploaded/generated content
+uploads/
+recordings/

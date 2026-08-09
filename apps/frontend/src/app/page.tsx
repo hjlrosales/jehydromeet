@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { CreateMeetingForm } from '@/components/CreateMeetingForm';
 import { JoinMeetingForm } from '@/components/JoinMeetingForm';
+import { UserMenu } from '@/components/UserMenu';
 
 export default function HomePage() {
   const router = useRouter();
@@ -16,20 +17,16 @@ export default function HomePage() {
       <header className="flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-700 sm:px-6">
         <div className="flex items-center gap-2">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600">
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              fill="white"
-              className="h-5 w-5"
-            >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" className="h-5 w-5">
               <path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
             </svg>
           </div>
-          <span className="text-lg font-semibold text-slate-900 dark:text-white">
-            Jehydro Meet
-          </span>
+          <span className="text-lg font-semibold text-slate-900 dark:text-white">Jehydro Meet</span>
         </div>
-        <ThemeToggle />
+        <div className="flex items-center gap-3">
+          <UserMenu />
+          <ThemeToggle />
+        </div>
       </header>
 
       {/* Main Content */}

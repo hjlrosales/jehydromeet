@@ -2,6 +2,8 @@ import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
 import { ThemeProvider } from '@/components/ThemeProvider';
+import { AuthProvider } from '@/context/AuthContext';
+import { AuthModal } from '@/components/AuthModal';
 
 const inter = Inter({ subsets: ['latin'], display: 'swap' });
 
@@ -18,7 +20,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" suppressHydrationWarning>
       <body className={`${inter.className} min-h-screen antialiased`}>
-        <ThemeProvider>{children}</ThemeProvider>
+        <ThemeProvider>
+          <AuthProvider>
+            {children}
+            <AuthModal />
+          </AuthProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

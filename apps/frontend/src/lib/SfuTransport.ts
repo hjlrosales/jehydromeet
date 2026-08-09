@@ -10,7 +10,8 @@
 // ============================================================
 
 import { Room, RoomEvent, Track, type RemoteParticipant, type RemoteTrackPublication } from 'livekit-client';
-import type { MediaTransport, JoinOptions, TransportEvent } from '@jehydro/shared-types';
+import type { MediaTransport, JoinOptions, TransportEvent, BackgroundEffect, BackgroundImagePresetId } from '@jehydro/shared-types';
+import { BackgroundProcessor } from './BackgroundProcessor';
 
 type EventHandler = (...args: any[]) => void;
 
@@ -22,6 +23,10 @@ export class SfuTransport implements MediaTransport {
 
   // Event listeners
   private listeners = new Map<TransportEvent, Set<EventHandler>>();
+
+  // Background effect
+  private backgroundProcessor: BackgroundProcessor | null = null;
+  private originalVideoTrackPub: MediaStreamTrack | null = null;
 
   // Track subscriptions: remote participant identity -> parsed uuid
   private remoteParticipants = new Map<string, string>();
@@ -172,6 +177,65 @@ export class SfuTransport implements MediaTransport {
 
   off(event: TransportEvent, handler: EventHandler): void {
     this.listeners.get(event)?.delete(handler);
+  }
+
+  async setBackgroundEffect(effect: BackgroundEffect, imageId?: BackgroundImagePresetId): Promise<void> {
+    // Clean up previous processor
+    if (this.backgroundProcessor) {
+      this.backgroundProcessor.destroy();
+      this.backgroundProcessor = null;
+    }
+
+    if (effect === 'none') {
+      // Restore original camera track
+      if (this.originalVideoTrackPub) {
+        // Re-publish the original track
+        const videoPub = this.room.localParticipant.getTrackPublication(Track.Source.Camera);
+        if (videoPub?.track) {
+          await this.room.localParticipant.unpublishTrack(videoPub.track, true);
+        }
+        await this.room.localParticipant.publishTrack(this.originalVideoTrackPub, {
+          simulcast: true,
+          videoCodec: 'vp8',
+        });
+        this.originalVideoTrackPub = null;
+      }
+      return;
+    }
+
+    if (!this.localStream) return;
+
+    // Save original track if not already saved
+    if (!this.originalVideoTrackPub) {
+      const videoTrack = this.localStream.getVideoTracks()[0];
+      if (videoTrack) {
+        this.originalVideoTrackPub = videoTrack.clone();
+      }
+    }
+
+    // Create processor
+    const processor = new BackgroundProcessor(this.localStream);
+    await processor.init();
+    processor.setEffect(effect === 'blur' ? 'blur' : 'image', imageId);
+    this.backgroundProcessor = processor;
+
+    // Get processed track
+    const outputStream = processor.getOutputStream();
+    if (!outputStream) return;
+    const processedTrack = outputStream.getVideoTracks()[0];
+    if (!processedTrack) return;
+
+    // Unpublish old camera, publish processed track
+    const videoPub = this.room.localParticipant.getTrackPublication(Track.Source.Camera);
+    if (videoPub?.track) {
+      await this.room.localParticipant.unpublishTrack(videoPub.track, true);
+    }
+    await this.room.localParticipant.publishTrack(processedTrack, {
+      simulcast: true,
+      videoCodec: 'vp8',
+    });
+
+    this.syncLocalStream();
   }
 
   // -----------------------------------------------------------

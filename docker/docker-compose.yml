@@ -67,16 +67,27 @@ services:
       - MAX_ROOMS_PER_IP_PER_HOUR=${MAX_ROOMS_PER_IP_PER_HOUR:-20}
       - TURN_SECRET=${TURN_SECRET}
       - TURN_URLS=${TURN_URLS:-turn:turn.jehydro.com:3478}
+      # Recording configuration
+      - RECORDING_STORAGE_PATH=${RECORDING_STORAGE_PATH:-/data/recordings}
+      - RECORDING_RETENTION_DAYS=${RECORDING_RETENTION_DAYS:-7}
+      - RECORDING_MAX_STORAGE_GB=${RECORDING_MAX_STORAGE_GB:-10}
+      # Phase 15 database connection
+      - DATABASE_URL=postgresql://jehydro:${POSTGRES_PASSWORD:-changeme}@postgres:5432/jehydro_meet
+      - JWT_SECRET=${JWT_SECRET}
+      - FILE_UPLOAD_PATH=/data/uploads
       # Redis (uncomment when running >1 backend instance)
       # - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+    volumes:
+      # Shared volume for LiveKit Egress recordings (both backend and livekit need access)
+      - recording-data:/data/recordings
+      - upload-data:/data/uploads
     expose:
       - "4000"
+    depends_on:
+      - postgres
     restart: unless-stopped
     networks:
       - meet-net
-    # Uncomment when Redis is needed:
-    # depends_on:
-    #   - redis
 
   # -----------------------------------------------------------
   # Coturn — TURN/STUN server for NAT traversal
@@ -102,6 +113,30 @@ services:
     # networks key omitted intentionally when network_mode: host
 
   # -----------------------------------------------------------
+  # PostgreSQL — Database for Phase 15 (accounts, history, recordings)
+  # -----------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=jehydro
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
+      - POSTGRES_DB=jehydro_meet
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    expose:
+      - "5432"
+    restart: unless-stopped
+    networks:
+      - meet-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jehydro -d jehydro_meet"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # -----------------------------------------------------------
   # LiveKit — SFU media server (>8 participants)
   # -----------------------------------------------------------
   livekit:
@@ -116,9 +151,12 @@ services:
       - ./livekit.yaml:/etc/livekit.yaml:ro
       # Let's Encrypt certificates for TURN TLS
       - /etc/letsencrypt:/etc/letsencrypt:ro
+      # Shared volume for recording files (same mount point as backend)
+      - recording-data:/data/recordings
     environment:
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
+      - RECORDING_STORAGE_PATH=${RECORDING_STORAGE_PATH:-/data/recordings}
     restart: unless-stopped
     networks:
       - meet-net
@@ -142,5 +180,8 @@ networks:
   meet-net:
     driver: bridge
 
-# volumes:
-#   redis-data:
+volumes:
+  recording-data:
+  postgres-data:
+  upload-data:
+  # redis-data:

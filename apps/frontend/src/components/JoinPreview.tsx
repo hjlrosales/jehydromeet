@@ -116,7 +116,12 @@ export function JoinPreview({ roomId, displayName, onJoin, onBack, needsPassword
       return;
     }
 
-    const audioCtx = new AudioContext();
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioCtx) {
+      setAudioLevel(0);
+      return;
+    }
+    const audioCtx = new AudioCtx();
     audioContextRef.current = audioCtx;
     const source = audioCtx.createMediaStreamSource(stream);
     const analyser = audioCtx.createAnalyser();

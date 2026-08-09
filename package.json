@@ -9,10 +9,13 @@
     "lint": "pnpm -r lint",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md}\"",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "report:open": "pnpm --filter @jehydro/frontend report:open",
+    "validate:env": "node scripts/validate-env.js"
   },
   "devDependencies": {
     "concurrently": "^8.2.2",
+    "dotenv": "^17.4.2",
     "prettier": "^3.2.5",
     "typescript": "^5.4.5"
   },

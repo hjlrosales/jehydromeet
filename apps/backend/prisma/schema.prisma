@@ -1,0 +1,145 @@
+// ============================================================
+// Jehydro Meet — Prisma Schema (Phase 15: Persistence)
+// ============================================================
+// First introduction of a database to the platform.
+// Guests still do NOT need an account; accounts are optional.
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// -----------------------------------------------------------
+// User — optional accounts
+// -----------------------------------------------------------
+model User {
+  id          String   @id @default(uuid())
+  email       String   @unique
+  displayName String   @map("display_name")
+  // Password hash (bcrypt) — null if using magic link only
+  passwordHash String? @map("password_hash")
+  avatarUrl   String?  @map("avatar_url")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  signedInAt    DateTime?          @map("signed_in_at")
+  meetingHistory MeetingHistory[]
+  scheduledMeetings  ScheduledMeeting[]
+  recordings    Recording[]
+  uploadedFiles UploadedFile[]
+  authTokens    AuthToken[]
+
+  @@map("users")
+}
+
+// -----------------------------------------------------------
+// Auth token — for magic link tokens, refresh tokens
+// -----------------------------------------------------------
+model AuthToken {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  token     String   @unique
+  type      String   // "magic_link" | "session" | "refresh"
+  expiresAt DateTime @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([expiresAt])
+  @@map("auth_tokens")
+}
+
+// -----------------------------------------------------------
+// Meeting History — rooms created or joined by signed-in users
+// -----------------------------------------------------------
+model MeetingHistory {
+  id             String   @id @default(uuid())
+  userId         String   @map("user_id")
+  roomId         String   @map("room_id")
+  role           String   // "host" | "participant"
+  mediaMode      String   @map("media_mode") // "mesh" | "sfu"
+  participantCount Int    @default(0) @map("participant_count")
+  durationMs     Int?     @map("duration_ms") // null if still ongoing at write time
+  joinedAt       DateTime @map("joined_at")
+  leftAt         DateTime? @map("left_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([roomId])
+  @@map("meeting_history")
+}
+
+// -----------------------------------------------------------
+// Scheduled Meeting — create rooms in advance
+// -----------------------------------------------------------
+model ScheduledMeeting {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  roomId      String   @unique @map("room_id")
+  title       String
+  description String?
+  mediaMode   String   @default("mesh") @map("media_mode") // "mesh" | "sfu"
+  scheduledAt DateTime @map("scheduled_at")
+  durationMin Int?     @default(60) @map("duration_min")
+  icsToken    String?  @unique @map("ics_token") // token for ICS calendar download
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([scheduledAt])
+  @@map("scheduled_meetings")
+}
+
+// -----------------------------------------------------------
+// Recording — links Phase 12 recordings to user accounts
+// -----------------------------------------------------------
+model Recording {
+  id          String   @id
+  roomId      String   @map("room_id")
+  userId      String   @map("user_id")
+  fileName    String   @map("file_name")
+  filePath    String   @map("file_path")
+  fileSize    Int?     @map("file_size")
+  durationMs  Int?     @map("duration_ms")
+  startedAt   DateTime @map("started_at")
+  stoppedAt   DateTime? @map("stopped_at")
+  status      String   @default("completed") // "recording" | "completed" | "failed"
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([roomId])
+  @@map("recordings")
+}
+
+// -----------------------------------------------------------
+// Uploaded File — file sharing in chat (Phase 15)
+// -----------------------------------------------------------
+model UploadedFile {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  roomId      String   @map("room_id")
+  originalName String  @map("original_name")
+  storagePath String   @map("storage_path")
+  mimeType    String   @map("mime_type")
+  sizeBytes   Int      @map("size_bytes")
+  uploadedAt  DateTime @default(now()) @map("uploaded_at")
+  expiresAt   DateTime @map("expires_at") // auto-delete after expiry
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([roomId])
+  @@index([expiresAt])
+  @@map("uploaded_files")
+}

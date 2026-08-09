@@ -33,12 +33,15 @@ export function useSocket(): Socket | null {
         const { io } = await import('socket.io-client');
         // Double-check: another call may have initialized while we were awaiting
         if (globalSocket) return;
+        // Pass JWT token in auth for meeting history recording (Phase 15)
+        const token = typeof window !== 'undefined' ? localStorage.getItem('jehydro-jwt') : null;
         globalSocket = io(BACKEND_URL, {
           transports: ['websocket', 'polling'],
           autoConnect: true,
           reconnection: true,
           reconnectionAttempts: 5,
           reconnectionDelay: 1000,
+          auth: token ? { token } : undefined,
         });
 
         globalSocket.on('connect', () => {

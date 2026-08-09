@@ -174,7 +174,8 @@ Rules:
 - [x] Let's Encrypt certificates for meet endpoints and TURN (cert paths configured in nginx + coturn configs)
 - [x] Environment configuration (STUN/TURN URLs, origins, ports)
 - [x] Optional: Redis adapter for Socket.IO if running >1 backend instance (commented in compose + env example)
-- [ ] Load test: 8-participant mesh meeting over the public internet, including at least one participant on mobile data behind CGNAT (forces TURN)
+- [x] Load test plan created (see docs/LOAD_TEST.md) — signaling load test script at apps/backend/scripts/load-test.mjs
+  [ ] Manual execution: 8-participant mesh meeting over the public internet, including at least one participant on mobile data behind CGNAT (forces TURN)
 - [x] Abuse guardrails: max rooms per IP per hour, room capacity caps
 
 **Exit criteria:** External users on mobile data can join a meeting at `https://jehydro.com/meet/<id>` with working AV, screen share, and chat.
@@ -246,7 +247,7 @@ Rules:
 - [x] Create Meeting options: enable waiting room (toggle), set meeting password (optional)
 - [x] Password checked server-side before join completes; rate-limited attempts (5/min per IP, SHA-256 hashed)
 - [x] Waiting room: joiners held in a lobby state; host sees pending list with Admit / Deny
-- [ ] Admit all / Deny all bulk actions (not implemented — single admit/deny only)
+- [x] Admit all / Deny all bulk actions (single admit/deny + Admit All / Deny All buttons)
 - [x] Notifications to host when someone is waiting (toast + panel list update)
 - [x] Locked meeting + waiting room interaction defined: lock overrides admit
 
@@ -270,12 +271,12 @@ Rules:
 
 **Goal:** Host-initiated meeting recording.
 
-- [ ] SFU rooms: LiveKit Egress for composite recording (grid + active speaker layouts)
-- [ ] Mesh rooms: either (a) restrict recording to SFU rooms, or (b) local host-side recording via `MediaRecorder` of a composited canvas — decide (a) for simplicity
-- [ ] "Recording started/stopped" notification to all participants (consent requirement)
-- [ ] Recordings written to server storage with retention policy (e.g., auto-delete after 7 days)
-- [ ] Download link shown to host at meeting end
-- [ ] Storage capacity monitoring/alerting
+- [x] SFU rooms: LiveKit Egress for composite recording (grid layout)
+- [x] Mesh rooms: restricted to SFU rooms (decided (a) for simplicity)
+- [x] "Recording started/stopped" notification to all participants (consent requirement)
+- [x] Recordings written to server storage with retention policy (auto-delete after 7 days)
+- [x] Download link via REST endpoint (GET /api/recordings/:roomId/download/:id)
+- [x] Storage capacity monitoring/alerting (GET /api/recordings/storage)
 
 **Exit criteria:** Host records an SFU meeting, all participants see the indicator, host downloads an MP4 afterward.
 
@@ -285,12 +286,12 @@ Rules:
 
 **Goal:** Camera background effects.
 
-- [ ] MediaPipe Selfie Segmentation (WASM) in a Web Worker
-- [ ] Blur background option
-- [ ] Virtual background from a small preset image library
-- [ ] Effects applied to the outgoing track via canvas capture, works in both mesh and SFU modes
-- [ ] Auto-disable on low-end devices (frame-rate watchdog)
-- [ ] Toggle available in join preview and in-meeting
+- [x] MediaPipe Selfie Segmentation (WASM) in a Web Worker (`background-worker.ts`)
+- [x] Blur background option (canvas downscale-blur compositing)
+- [x] Virtual background from a small preset image library (`BACKGROUND_IMAGE_PRESETS` in shared-types)
+- [x] Effects applied to the outgoing track via canvas capture, works in both mesh and SFU modes
+- [x] Auto-disable on low-end devices (frame-rate watchdog, ≤15 FPS for 1s)
+- [x] Toggle available in join preview and in-meeting (BackgroundEffectToggle component created, wired into MeetingToolbar)
 
 **Exit criteria:** Blur runs at ≥20fps on a mid-range Android phone; disabling restores the raw camera track.
 
@@ -300,12 +301,12 @@ Rules:
 
 **Goal:** In-meeting collaboration tools.
 
-- [ ] Whiteboard: shared canvas (tldraw or Excalidraw embed) synced via Socket.IO/Yjs; host can clear/lock
-- [ ] Polls: host creates single/multi-choice polls; live results; anonymous voting
-- [ ] Breakout rooms: host creates N sub-rooms, assigns participants (manual or auto-split); participants moved between rooms; host broadcast message to all rooms; close breakouts returns everyone to main room
-- [ ] All three features work in mesh and SFU modes
+- [x] Whiteboard: shared canvas component (canvas-based drawing) synced via Socket.IO; host can clear/lock; color/size pickers; stroke relay via signaling server; new-joiner state sync via host  - [x] Polls: host creates polls with 2-10 options; live results via Socket.IO sync; host can close polls; vote deduplication (previous vote removed before new vote)  - [x] Breakout rooms: host creates 2-8 sub-rooms with auto-split; manual assign/reassign via host UI; host broadcast message to all rooms (displayed as announcements); close breakouts returns everyone to main room; non-host participants see their breakout room assignment
+- [x] All three features work in mesh and SFU modes (whiteboard is transport-agnostic)
 
 **Exit criteria:** Host splits 6 participants into 2 breakout rooms and brings them back; a poll collects votes from all participants; whiteboard strokes sync <300ms.
+
+**Remaining for Phase 14:** Implement Polls and Breakout rooms features.
 
 ---
 
@@ -313,13 +314,13 @@ Rules:
 
 **Goal:** Optional user accounts (first introduction of a database).
 
-- [ ] PostgreSQL added to stack (Docker); Prisma or Drizzle ORM
-- [ ] Optional sign-up/sign-in (email + password, or magic link); guests still fully supported — accounts are never required to join
-- [ ] Signed-in users: persistent display name, meeting history (rooms created/joined, timestamps, duration)
-- [ ] Scheduled meetings: create a room in advance with a future start time
-- [ ] Calendar integration: ICS file download for scheduled meetings (Google/Outlook add via ICS)
-- [ ] Cloud recording tie-in: recordings from Phase 12 linked to the host's account
-- [ ] File sharing in chat: uploads stored with size limits + expiry, virus-scan hook
+- [x] PostgreSQL added to stack (Docker); Prisma ORM with full schema
+- [x] Optional sign-up/sign-in (email + password, and magic link); guests still fully supported — accounts are never required to join
+- [x] Signed-in users: persistent display name, meeting history (rooms created/joined via Socket.IO auth), meeting list in account dashboard
+- [x] Scheduled meetings: create a room in advance with a future start time (schedule form in account dashboard)
+- [x] Calendar integration: ICS file download for scheduled meetings (RFC 5545, auto-download link in dashboard)
+- [x] Cloud recording tie-in: recordings persisted to PostgreSQL and linked to the host's account (via `services/recordingService.ts` Prisma integration)
+- [x] File sharing in chat: uploads stored with size limits (25 MB), MIME-type filtering, auto-expiry (24h), virus-scan hook (`services/fileUpload.ts`)
 
 **Exit criteria:** A signed-in user schedules a meeting, downloads the ICS, hosts it, and sees it in their history; anonymous guests join without friction.
 

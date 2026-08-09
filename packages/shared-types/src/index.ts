@@ -74,6 +74,20 @@ export interface JoinOptions {
 }
 
 // -----------------------------------------------------------
+// Background effects (Phase 13)
+// -----------------------------------------------------------
+export type BackgroundEffect = 'none' | 'blur' | 'image';
+
+export const BACKGROUND_IMAGE_PRESETS = [
+  { id: 'meadow', name: 'Meadow', url: '/bg/meadow.jpg' },
+  { id: 'office', name: 'Office', url: '/bg/office.jpg' },
+  { id: 'abstract', name: 'Abstract', url: '/bg/abstract.jpg' },
+  { id: 'beach', name: 'Beach', url: '/bg/beach.jpg' },
+] as const;
+
+export type BackgroundImagePresetId = (typeof BACKGROUND_IMAGE_PRESETS)[number]['id'];
+
+// -----------------------------------------------------------
 // MediaTransport interface (frontend-only contract)
 // -----------------------------------------------------------
 export type TransportEvent =
@@ -94,6 +108,7 @@ export interface MediaTransport {
   switchCamera(): Promise<void>;
   on(event: TransportEvent, handler: (...args: any[]) => void): void;
   off(event: TransportEvent, handler: (...args: any[]) => void): void;
+  setBackgroundEffect(effect: BackgroundEffect, imageId?: BackgroundImagePresetId): Promise<void>;
 }
 
 // -----------------------------------------------------------
@@ -156,16 +171,56 @@ export const SocketEvents = {
   TURN_CREDENTIALS: 'turn:credentials',
   TURN_CREDENTIALS_RESPONSE: 'turn:credentials:response',
 
+  // Recording
+  RECORDING_START: 'recording:start',
+  RECORDING_STOP: 'recording:stop',
+  RECORDING_STARTED: 'recording:started',
+  RECORDING_STOPPED: 'recording:stopped',
+  RECORDING_ERROR: 'recording:error',
+  RECORDING_COMPLETED: 'recording:completed',
+  RECORDING_STATUS: 'recording:status',
+
   // Waiting room & password
   WAITING_PARTICIPANT_ADDED: 'waiting:participant-added',
   WAITING_PARTICIPANT_REMOVED: 'waiting:participant-removed',
   WAITING_PARTICIPANTS_LIST: 'waiting:participants-list',
   WAITING_ADMIT: 'waiting:admit',
+  WAITING_ADMIT_ALL: 'waiting:admit-all',
   WAITING_DENY: 'waiting:deny',
+  WAITING_DENY_ALL: 'waiting:deny-all',
   WAITING_ADMITTED: 'waiting:admitted',
   WAITING_REJECTED: 'waiting:rejected',
   PASSWORD_REQUIRED: 'room:password-required',
   PASSWORD_INCORRECT: 'room:password-incorrect',
+
+  // Whiteboard (Phase 14)
+  WHITEBOARD_UPDATE: 'whiteboard:update',
+  WHITEBOARD_CLEAR: 'whiteboard:clear',
+  WHITEBOARD_LOCK: 'whiteboard:lock',
+  WHITEBOARD_STATE: 'whiteboard:state',
+
+  // Polls (Phase 14)
+  POLL_CREATE: 'poll:create',
+  POLL_CREATED: 'poll:created',
+  POLL_VOTE: 'poll:vote',
+  POLL_VOTED: 'poll:voted',
+  POLL_CLOSE: 'poll:close',
+  POLL_CLOSED: 'poll:closed',
+  POLL_STATE: 'poll:state',
+
+  // Breakout Rooms (Phase 14)
+  BREAKOUT_CREATE: 'breakout:create',
+  BREAKOUT_CREATED: 'breakout:created',
+  BREAKOUT_ASSIGN: 'breakout:assign',
+  BREAKOUT_ASSIGNED: 'breakout:assigned',
+  BREAKOUT_AUTO_SPLIT: 'breakout:auto-split',
+  BREAKOUT_CLOSE: 'breakout:close',
+  BREAKOUT_CLOSED: 'breakout:closed',
+  BREAKOUT_BROADCAST: 'breakout:broadcast',
+  BREAKOUT_BROADCASTED: 'breakout:broadcasted',
+  BREAKOUT_STATE: 'breakout:state',
+  BREAKOUT_JOIN: 'breakout:join',
+  BREAKOUT_LEAVE: 'breakout:leave',
 } as const;
 
 export type SocketEventName = (typeof SocketEvents)[keyof typeof SocketEvents];
@@ -173,6 +228,12 @@ export type SocketEventName = (typeof SocketEvents)[keyof typeof SocketEvents];
 // -----------------------------------------------------------
 // Socket event payload types
 // -----------------------------------------------------------
+/** A minimal poll spec for pre-creating polls before the meeting starts */
+export interface PrePollCreate {
+  question: string;
+  options: string[];
+}
+
 export interface RoomCreatePayload {
   mediaMode: MediaMode;
   displayName: string;
@@ -180,6 +241,7 @@ export interface RoomCreatePayload {
   cameraEnabled: boolean;
   password?: string;
   waitingRoom?: boolean;
+  prePolls?: PrePollCreate[];
 }
 
 export interface RoomCreatedPayload {
@@ -287,6 +349,14 @@ export interface WaitingDenyPayload {
   targetUuid: string;
 }
 
+export interface WaitingAdmitAllPayload {
+  // No additional fields needed — admits all pending
+}
+
+export interface WaitingDenyAllPayload {
+  // No additional fields needed — denies all pending
+}
+
 export interface WaitingAdmittedPayload {
   roomId: string;
 }
@@ -303,4 +373,181 @@ export interface PasswordIncorrectPayload {
   roomId: string;
   attemptsRemaining: number;
   locked?: boolean;
+}
+
+// -----------------------------------------------------------
+// Whiteboard types (Phase 14)
+// -----------------------------------------------------------
+export interface WhiteboardStroke {
+  id: string;
+  senderUuid: string;
+  /** SVG path data or array of {x,y} points */
+  points: { x: number; y: number }[];
+  color: string;
+  width: number;
+  timestamp: number;
+}
+
+export interface WhiteboardClearPayload {
+  roomId: string;
+  clearedBy: string;
+}
+
+export interface WhiteboardLockPayload {
+  roomId: string;
+  locked: boolean;
+}
+
+export type WhiteboardUpdate = {
+  type: 'stroke';
+  stroke: WhiteboardStroke;
+} | {
+  type: 'clear';
+  clearedBy: string;
+} | {
+  type: 'lock';
+  locked: boolean;
+};
+
+// -----------------------------------------------------------
+// Poll types (Phase 14)
+// -----------------------------------------------------------
+export interface PollOption {
+  id: string;
+  text: string;
+  votes: string[]; // UUIDs of voters
+}
+
+export interface Poll {
+  id: string;
+  createdBy: string;
+  question: string;
+  options: PollOption[];
+  createdAt: number;
+  closedAt?: number;
+  status: 'active' | 'closed';
+}
+
+export interface PollCreatePayload {
+  question: string;
+  options: string[]; // option text strings
+}
+
+export interface PollCreatedPayload {
+  poll: Poll;
+}
+
+export interface PollVotePayload {
+  pollId: string;
+  optionId: string;
+}
+
+export interface PollVotedPayload {
+  poll: Poll;
+}
+
+export interface PollClosePayload {
+  pollId: string;
+}
+
+export interface PollClosedPayload {
+  poll: Poll;
+}
+
+export interface PollStatePayload {
+  polls: Poll[];
+}
+
+// -----------------------------------------------------------
+// Breakout Room types (Phase 14)
+// -----------------------------------------------------------
+export interface BreakoutRoom {
+  id: string;
+  name: string;
+  participantUuids: string[];
+}
+
+export interface BreakoutRoomsState {
+  isActive: boolean;
+  rooms: BreakoutRoom[];
+  /** participantUuid -> breakoutRoomId */
+  assignments: Record<string, string>;
+}
+
+export interface BreakoutCreatePayload {
+  roomCount: number; // 2-8 rooms
+}
+
+export interface BreakoutAssignPayload {
+  participantUuid: string;
+  roomId: string;
+}
+
+export interface BreakoutBroadcastPayload {
+  message: string;
+}
+
+export interface BreakoutJoinPayload {
+  roomId: string;
+}
+
+export interface BreakoutCreatedPayload {
+  state: BreakoutRoomsState;
+}
+
+export interface BreakoutAssignedPayload {
+  state: BreakoutRoomsState;
+}
+
+export interface BreakoutClosedPayload {
+  roomId: string; // main room ID (for client to clear state)
+}
+
+export interface BreakoutBroadcastedPayload {
+  senderName: string;
+  message: string;
+}
+
+export interface BreakoutStatePayload {
+  state: BreakoutRoomsState | null;
+}
+
+// -----------------------------------------------------------
+// Recording types
+// -----------------------------------------------------------
+export interface Recording {
+  id: string;
+  roomId: string;
+  startedAt: number;
+  stoppedAt?: number;
+  durationMs?: number;
+  filePath?: string;
+  fileSize?: number;
+  status: 'recording' | 'completed' | 'failed';
+}
+
+export interface RecordingStartedPayload {
+  roomId: string;
+  recording: Recording;
+}
+
+export interface RecordingStoppedPayload {
+  roomId: string;
+  recording: Recording;
+}
+
+export interface RecordingCompletedPayload {
+  roomId: string;
+  recording: Recording;
+}
+
+export interface RecordingErrorPayload {
+  roomId: string;
+  error: string;
+}
+
+export interface RecordingStatusPayload {
+  roomId: string;
+  isRecording: boolean;
+  recording?: Recording;
 }

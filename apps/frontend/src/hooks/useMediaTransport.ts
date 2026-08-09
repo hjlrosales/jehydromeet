@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Socket } from 'socket.io-client';
 import { SocketEvents } from '@jehydro/shared-types';
 import type {
+  BackgroundEffect,
+  BackgroundImagePresetId,
   JoinOptions,
   Participant,
   ParticipantJoinedPayload,
@@ -47,7 +49,11 @@ interface UseMediaTransportResult {
   switchCamera: () => Promise<void>;
   startScreenShare: () => Promise<void>;
   stopScreenShare: () => Promise<void>;
+  setBackgroundEffect: (effect: BackgroundEffect, imageId?: BackgroundImagePresetId) => Promise<void>;
   leave: () => Promise<void>;
+
+  // Background
+  currentBackgroundEffect: BackgroundEffect;
 
   // All participants combined (self + remote) for the panel
   allParticipants: ParticipantBrief[];
@@ -104,6 +110,7 @@ export function useMediaTransport(socket: Socket | null): UseMediaTransportResul
   const [isSharingScreen, setIsSharingScreen] = useState(false);
   const [screenShareAllowed, setScreenShareAllowed] = useState<boolean>(true);
   const [speakingUuids, setSpeakingUuids] = useState<Set<string>>(new Set());
+  const [currentBackgroundEffect, setCurrentBackgroundEffect] = useState<BackgroundEffect>('none');
   const participantsRef = useRef<Map<string, Participant>>(new Map());
   const remoteStreamsRef = useRef<Map<string, RemoteParticipantStream>>(new Map());
   const speakingRef = useRef<Set<string>>(new Set());
@@ -388,6 +395,20 @@ export function useMediaTransport(socket: Socket | null): UseMediaTransportResul
     }
   }, []);
 
+  const setBackgroundEffect = useCallback(
+    async (effect: 'none' | 'blur' | 'image', imageId?: BackgroundImagePresetId) => {
+      const transport = transportRef.current;
+      if (!transport) return;
+      try {
+        await transport.setBackgroundEffect(effect, imageId);
+        setCurrentBackgroundEffect(effect);
+      } catch (err) {
+        console.error('[useMediaTransport] setBackgroundEffect failed:', err);
+      }
+    },
+    []
+  );
+
   const leave = useCallback(async () => {
     const transport = transportRef.current;
     if (!transport) return;
@@ -452,6 +473,8 @@ export function useMediaTransport(socket: Socket | null): UseMediaTransportResul
     switchCamera,
     startScreenShare,
     stopScreenShare,
+    setBackgroundEffect,
+    currentBackgroundEffect,
     leave,
     joinMeeting,
     setPendingMedia,

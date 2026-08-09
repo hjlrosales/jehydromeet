@@ -17,6 +17,9 @@ import type {
   SignalMessage,
 } from '@jehydro/shared-types';
 
+import { BackgroundProcessor } from './BackgroundProcessor';
+import type { BackgroundEffect, BackgroundImagePresetId } from '@jehydro/shared-types';
+
 // ICE servers from environment or default Google STUN
 function getIceServers(): RTCIceServer[] {
   try {
@@ -160,6 +163,11 @@ export class MeshTransport implements MediaTransport {
   private screenTrack: MediaStreamTrack | null = null;
   private cameraTrackBeforeShare: MediaStreamTrack | null = null;
   private stopScreenShareHandler: (() => void) | null = null;
+
+  // Background effect (Phase 13)
+  private backgroundProcessor: BackgroundProcessor | null = null;
+  private originalVideoTrack: MediaStreamTrack | null = null;
+  private backgroundImageId: BackgroundImagePresetId | null = null;
 
   async startScreenShare(): Promise<void> {
     if (this.screenTrack) {
@@ -692,6 +700,82 @@ export class MeshTransport implements MediaTransport {
     if (handlers) {
       for (const handler of handlers) {
         handler(...args);
+      }
+    }
+  }
+
+  // -----------------------------------------------------------
+  // Background effect (Phase 13)
+  // -----------------------------------------------------------
+
+  async setBackgroundEffect(effect: BackgroundEffect, imageId?: BackgroundImagePresetId): Promise<void> {
+    // Clean up previous processor
+    if (this.backgroundProcessor) {
+      this.backgroundProcessor.destroy();
+      this.backgroundProcessor = null;
+    }
+
+    if (effect === 'none') {
+      // Restore original camera track if we replaced it
+      if (this.originalVideoTrack && this.localStream) {
+        const currentTrack = this.localStream.getVideoTracks()[0];
+        if (currentTrack && currentTrack !== this.originalVideoTrack) {
+          currentTrack.stop();
+          this.localStream.removeTrack(currentTrack);
+          this.localStream.addTrack(this.originalVideoTrack);
+
+          // Replace in all peer connections
+          for (const pc of this.peers.values()) {
+            const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+            if (sender) {
+              await sender.replaceTrack(this.originalVideoTrack).catch(() => {});
+            }
+          }
+        }
+      }
+      return;
+    }
+
+    if (!this.localStream) return;
+
+    // Save original track if not already saved
+    if (!this.originalVideoTrack) {
+      const videoTrack = this.localStream.getVideoTracks()[0];
+      if (videoTrack) {
+        this.originalVideoTrack = videoTrack.clone(); // Clone so original can keep running
+      }
+    }
+
+    // Create processor with current stream
+    const processor = new BackgroundProcessor(this.localStream);
+    await processor.init();
+
+    if (effect === 'image' && imageId) {
+      this.backgroundImageId = imageId;
+    }
+    processor.setEffect(effect, imageId);
+
+    this.backgroundProcessor = processor;
+
+    // Replace the video track in the local stream with the processed one
+    const outputStream = processor.getOutputStream();
+    if (!outputStream) return;
+
+    const processedTrack = outputStream.getVideoTracks()[0];
+    if (!processedTrack) return;
+
+    const currentTrack = this.localStream.getVideoTracks()[0];
+    if (currentTrack) {
+      this.localStream.removeTrack(currentTrack);
+      currentTrack.stop();
+    }
+    this.localStream.addTrack(processedTrack);
+
+    // Replace in all peer connections
+    for (const pc of this.peers.values()) {
+      const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+      if (sender) {
+        await sender.replaceTrack(processedTrack).catch(() => {});
       }
     }
   }
