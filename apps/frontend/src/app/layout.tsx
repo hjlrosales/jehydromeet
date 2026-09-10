@@ -8,7 +8,7 @@ import { AuthModal } from '@/components/AuthModal';
 const inter = Inter({ subsets: ['latin'], display: 'swap' });
 
 export const metadata: Metadata = {
-  title: 'Jehydro Meet — Video Conferencing',
+  title: 'JE Hydro Meet',
   description:
     'Browser-based video conferencing. No accounts, no installs — just join by link.',
   icons: {

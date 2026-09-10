@@ -57,6 +57,8 @@ interface UseMediaTransportResult {
 
   // All participants combined (self + remote) for the panel
   allParticipants: ParticipantBrief[];
+  myUuid: string;
+  isHost: boolean;
 
   // Initialization
   joinMeeting: (payload: RoomJoinedPayload) => Promise<void>;
@@ -111,6 +113,7 @@ export function useMediaTransport(socket: Socket | null): UseMediaTransportResul
   const [screenShareAllowed, setScreenShareAllowed] = useState<boolean>(true);
   const [speakingUuids, setSpeakingUuids] = useState<Set<string>>(new Set());
   const [currentBackgroundEffect, setCurrentBackgroundEffect] = useState<BackgroundEffect>('none');
+  const [, setParticipantsVersion] = useState(0);
   const participantsRef = useRef<Map<string, Participant>>(new Map());
   const remoteStreamsRef = useRef<Map<string, RemoteParticipantStream>>(new Map());
   const speakingRef = useRef<Set<string>>(new Set());
@@ -119,6 +122,10 @@ export function useMediaTransport(socket: Socket | null): UseMediaTransportResul
   // Helper to push remote streams state to React
   const updateRemoteStreams = useCallback(() => {
     setRemoteStreams(Array.from(remoteStreamsRef.current.values()));
+  }, []);
+
+  const updateParticipants = useCallback(() => {
+    setParticipantsVersion((version) => version + 1);
   }, []);
 
   /**
@@ -219,6 +226,7 @@ export function useMediaTransport(socket: Socket | null): UseMediaTransportResul
         entry.isHost = uuid === payload.newHostId;
       }
       updateRemoteStreams();
+      updateParticipants();
     });
 
     // Listen for screen share events
@@ -230,6 +238,7 @@ export function useMediaTransport(socket: Socket | null): UseMediaTransportResul
       }
       const p = participantsRef.current.get(payload.uuid);
       if (p) p.isSharingScreen = true;
+      updateParticipants();
     });
 
     socket.on(SocketEvents.SCREEN_SHARE_STOPPED, (payload: { uuid: string }) => {
@@ -241,6 +250,7 @@ export function useMediaTransport(socket: Socket | null): UseMediaTransportResul
       }
       const p = participantsRef.current.get(payload.uuid);
       if (p) p.isSharingScreen = false;
+      updateParticipants();
     });
 
     return () => {
@@ -249,7 +259,7 @@ export function useMediaTransport(socket: Socket | null): UseMediaTransportResul
       socket.off(SocketEvents.SCREEN_SHARE_STARTED);
       socket.off(SocketEvents.SCREEN_SHARE_STOPPED);
     };
-  }, [socket, updateRemoteStreams]);
+  }, [socket, updateRemoteStreams, updateParticipants]);
 
   const joinMeeting = useCallback(
     async (payload: RoomJoinedPayload) => {
@@ -265,6 +275,7 @@ export function useMediaTransport(socket: Socket | null): UseMediaTransportResul
       for (const p of payload.participants) {
         participantsRef.current.set(p.uuid, p);
       }
+      updateParticipants();
 
       myUuidRef.current = payload.yourUuid;
       setScreenShareAllowed(payload.screenShareAllowed);
@@ -328,6 +339,7 @@ export function useMediaTransport(socket: Socket | null): UseMediaTransportResul
         socket.on(SocketEvents.PARTICIPANT_JOINED, (joinPayload: ParticipantJoinedPayload) => {
           const newParticipant = joinPayload.participant;
           participantsRef.current.set(newParticipant.uuid, newParticipant);
+          updateParticipants();
           transport.addPeer(newParticipant.uuid);
         });
 
@@ -335,22 +347,25 @@ export function useMediaTransport(socket: Socket | null): UseMediaTransportResul
         socket.on(SocketEvents.PARTICIPANT_LEFT, (leftPayload: ParticipantLeftPayload) => {
           transport.removePeer(leftPayload.uuid);
           participantsRef.current.delete(leftPayload.uuid);
+          updateParticipants();
         });
       } else {
         // SFU mode: LiveKit handles participant join/leave internally.
         // Still track participant list for UI updates from Socket.IO
         socket.on(SocketEvents.PARTICIPANT_JOINED, (joinPayload: ParticipantJoinedPayload) => {
           participantsRef.current.set(joinPayload.participant.uuid, joinPayload.participant);
+          updateParticipants();
         });
 
         socket.on(SocketEvents.PARTICIPANT_LEFT, (leftPayload: ParticipantLeftPayload) => {
           participantsRef.current.delete(leftPayload.uuid);
+          updateParticipants();
         });
       }
 
       setIsReady(true);
     },
-    [socket, createMeshTransport, setupTransportListeners]
+    [socket, createMeshTransport, setupTransportListeners, updateParticipants]
   );
 
   const toggleMic = useCallback(async () => {
@@ -425,7 +440,10 @@ export function useMediaTransport(socket: Socket | null): UseMediaTransportResul
     setRemoteStreams([]);
     setIsSharingScreen(false);
     setIsReady(false);
-  }, [socket, isSharingScreen]);
+    participantsRef.current.clear();
+    myUuidRef.current = '';
+    updateParticipants();
+  }, [socket, isSharingScreen, updateParticipants]);
 
   // Build the combined participant list (self + remote)
   const allParticipants: ParticipantBrief[] = (() => {
@@ -445,21 +463,26 @@ export function useMediaTransport(socket: Socket | null): UseMediaTransportResul
       isSpeaking: false, // We don't do local speaking detection
     });
 
-    // Remote participants
-    for (const r of remoteStreams) {
+    // Remote participants, including people whose media tracks have not arrived yet.
+    for (const [uuid, participant] of participantsRef.current) {
+      if (uuid === myUuid) continue;
+      const r = remoteStreams.find((stream) => stream.uuid === uuid);
       list.push({
-        uuid: r.uuid,
-        displayName: r.displayName,
-        micEnabled: r.micEnabled,
-        cameraEnabled: r.cameraEnabled,
-        isHost: r.isHost,
-        isSharingScreen: r.isSharingScreen,
-        isSpeaking: r.isSpeaking,
+        uuid,
+        displayName: r?.displayName ?? participant.displayName,
+        micEnabled: r?.micEnabled ?? participant.micEnabled,
+        cameraEnabled: r?.cameraEnabled ?? participant.cameraEnabled,
+        isHost: r?.isHost ?? participant.isHost,
+        isSharingScreen: r?.isSharingScreen ?? participant.isSharingScreen,
+        isSpeaking: r?.isSpeaking ?? speakingRef.current.has(uuid),
       });
     }
 
     return list;
   })();
+
+  const myUuid = myUuidRef.current;
+  const isHost = participantsRef.current.get(myUuid)?.isHost ?? false;
 
   return {
     localStream,
@@ -470,6 +493,8 @@ export function useMediaTransport(socket: Socket | null): UseMediaTransportResul
     remoteStreams,
     speakingUuids,
     allParticipants,
+    myUuid,
+    isHost,
     toggleMic,
     toggleCamera,
     switchCamera,

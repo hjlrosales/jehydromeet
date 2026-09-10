@@ -109,9 +109,8 @@ export default function MeetRoomPage() {
   // even after the hook removes them from participantsRef
   const nameMap = useRef<Map<string, string>>(new Map());
 
-  // Reference to self for host actions
-  // allParticipants[0] is always self (pushed first in useMediaTransport)
-  const isHost = media.allParticipants[0]?.isHost ?? false;
+  // Reference to self for host actions.
+  const isHost = media.isHost;
 
   // Refs to avoid stale closures in event handlers
   const micEnabledRef = useRef(media.micEnabled);
@@ -522,7 +521,13 @@ export default function MeetRoomPage() {
   // Determine if recording is available (SFU mode)
   const recordingAvailable = roomInfo?.mediaMode === 'sfu';
 
-  const totalParticipants = 1 + media.remoteStreams.length;
+  const totalParticipants = Math.max(1, media.allParticipants.length);
+  const remoteParticipantTiles = media.allParticipants
+    .filter((participant) => participant.uuid && participant.uuid !== media.myUuid)
+    .map((participant) => ({
+      participant,
+      stream: media.remoteStreams.find((remote) => remote.uuid === participant.uuid)?.stream ?? null,
+    }));
 
   // Compute grid columns based on participant count
   const gridCols =
@@ -582,7 +587,7 @@ export default function MeetRoomPage() {
           chatEnabled={chat.chatEnabled}
           onSend={chat.sendMessage}
           onClose={() => setChatPanelOpen(false)}
-          myDisplayName={media.allParticipants[0]?.displayName ?? 'You'}
+          myDisplayName={media.allParticipants.find((p) => p.uuid === media.myUuid)?.displayName ?? 'You'}
           participantNames={participantNameMap}
         />
       )}
@@ -605,8 +610,8 @@ export default function MeetRoomPage() {
         {/* Local video tile (self) */}
         <VideoTile
           uuid="local"
-          displayName={media.allParticipants[0]?.displayName ?? 'You'}
-          isHost={media.allParticipants[0]?.isHost ?? false}
+          displayName={media.allParticipants.find((p) => p.uuid === media.myUuid)?.displayName ?? 'You'}
+          isHost={media.isHost}
           stream={media.localStream}
           cameraEnabled={media.cameraEnabled}
           micEnabled={media.micEnabled}
@@ -617,18 +622,18 @@ export default function MeetRoomPage() {
         />
 
         {/* Remote video tiles */}
-        {media.remoteStreams.map((remote) => (
+        {remoteParticipantTiles.map(({ participant, stream }) => (
           <VideoTile
-            key={remote.uuid}
-            uuid={remote.uuid}
-            displayName={remote.displayName}
-            isHost={remote.isHost}
-            stream={remote.stream}
-            cameraEnabled={remote.cameraEnabled}
-            micEnabled={remote.micEnabled}
-            isSpeaking={remote.isSpeaking}
+            key={participant.uuid}
+            uuid={participant.uuid}
+            displayName={participant.displayName}
+            isHost={participant.isHost}
+            stream={stream}
+            cameraEnabled={participant.cameraEnabled}
+            micEnabled={participant.micEnabled}
+            isSpeaking={participant.isSpeaking}
             isLocal={false}
-            isScreenShare={remote.isSharingScreen}
+            isScreenShare={participant.isSharingScreen}
           />
         ))}
       </div>
