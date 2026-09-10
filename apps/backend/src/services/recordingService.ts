@@ -14,7 +14,7 @@
  *   RECORDING_MAX_STORAGE_GB (default 10)
  */
 
-import { EgressClient, EncodedFileType, AudioCodec } from 'livekit-server-sdk';
+import { AudioCodec, EgressClient, EncodedFileOutput, EncodedFileType, EncodingOptions } from 'livekit-server-sdk';
 import type { Recording } from '@jehydro/shared-types';
 import fs from 'fs';
 import path from 'path';
@@ -88,15 +88,15 @@ export async function startRecording(roomId: string): Promise<Recording | null> 
 
     const result = await client.startRoomCompositeEgress(
       roomId,
-      {
+      new EncodedFileOutput({
         fileType: EncodedFileType.MP4,
         filepath: filePath,
         disableManifest: true,
-      },
-      {
-        layout: 'grid',
+      }),
+      'grid',
+      new EncodingOptions({
         audioCodec: AudioCodec.OPUS,
-      }
+      })
     );
 
     const recording: Recording = {
@@ -149,9 +149,10 @@ export async function stopRecording(roomId: string, userId?: string): Promise<Re
     try {
       const egressInfo = await client.listEgress({ roomName: roomId });
       const completed = egressInfo.find((e) => e.egressId === recording.id);
-      if (completed?.file?.length) {
-        recording.filePath = completed.file[0]?.filename ?? recording.filePath;
-        recording.fileSize = completed.file[0]?.size;
+      const fileResult = completed?.fileResults[0];
+      if (fileResult) {
+        recording.filePath = fileResult.filename || recording.filePath;
+        recording.fileSize = Number(fileResult.size) || undefined;
       }
     } catch {
       // Non-critical — file info is best-effort
@@ -243,7 +244,7 @@ async function saveRecordingToDatabase(recording: Recording, userId?: string): P
     where: { id: recording.id },
     update: {
       status: recording.status,
-      filePath: recording.filePath ?? null,
+      filePath: recording.filePath ?? '',
       fileSize: recording.fileSize ?? null,
       durationMs: recording.durationMs ?? null,
       stoppedAt: recording.stoppedAt ? new Date(recording.stoppedAt) : null,
@@ -253,7 +254,7 @@ async function saveRecordingToDatabase(recording: Recording, userId?: string): P
       roomId: recording.roomId,
       userId,
       fileName: path.basename(recording.filePath ?? `meeting-${recording.roomId}.mp4`),
-      filePath: recording.filePath ?? null,
+      filePath: recording.filePath ?? '',
       fileSize: recording.fileSize ?? null,
       durationMs: recording.durationMs ?? null,
       startedAt: new Date(recording.startedAt),

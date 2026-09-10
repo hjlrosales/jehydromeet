@@ -9,11 +9,17 @@
 // so the UI and hooks work identically in both modes.
 // ============================================================
 
-import { Room, RoomEvent, Track, type RemoteParticipant, type RemoteTrackPublication } from 'livekit-client';
-import type { MediaTransport, JoinOptions, TransportEvent, BackgroundEffect, BackgroundImagePresetId } from '@jehydro/shared-types';
+import { Room, RoomEvent, Track, type RemoteParticipant, type RemoteTrack, type RemoteTrackPublication } from 'livekit-client';
+import type {
+  MediaTransport,
+  JoinOptions,
+  TransportEvent,
+  TransportEventHandler,
+  TransportEventPayloads,
+  BackgroundEffect,
+  BackgroundImagePresetId,
+} from '@jehydro/shared-types';
 import { BackgroundProcessor } from './BackgroundProcessor';
-
-type EventHandler = (...args: any[]) => void;
 
 export class SfuTransport implements MediaTransport {
   private room: Room;
@@ -22,7 +28,7 @@ export class SfuTransport implements MediaTransport {
   private localStream: MediaStream | null = null;
 
   // Event listeners
-  private listeners = new Map<TransportEvent, Set<EventHandler>>();
+  private listeners = new Map<TransportEvent, Set<TransportEventHandler>>();
 
   // Background effect
   private backgroundProcessor: BackgroundProcessor | null = null;
@@ -168,15 +174,15 @@ export class SfuTransport implements MediaTransport {
     }
   }
 
-  on(event: TransportEvent, handler: EventHandler): void {
+  on<Event extends TransportEvent>(event: Event, handler: TransportEventHandler<Event>): void {
     if (!this.listeners.has(event)) {
       this.listeners.set(event, new Set());
     }
-    this.listeners.get(event)!.add(handler);
+    this.listeners.get(event)!.add(handler as TransportEventHandler);
   }
 
-  off(event: TransportEvent, handler: EventHandler): void {
-    this.listeners.get(event)?.delete(handler);
+  off<Event extends TransportEvent>(event: Event, handler: TransportEventHandler<Event>): void {
+    this.listeners.get(event)?.delete(handler as TransportEventHandler);
   }
 
   async setBackgroundEffect(effect: BackgroundEffect, imageId?: BackgroundImagePresetId): Promise<void> {
@@ -254,7 +260,7 @@ export class SfuTransport implements MediaTransport {
     // When a remote participant publishes a track (audio/video/screen share)
     this.room.on(
       RoomEvent.TrackSubscribed,
-      (track: any, publication: RemoteTrackPublication, participant: RemoteParticipant) => {
+      (track: RemoteTrack, publication: RemoteTrackPublication, participant: RemoteParticipant) => {
         const remoteUuid = this.parseParticipantUuid(participant);
         if (!remoteUuid) return;
 
@@ -333,11 +339,14 @@ export class SfuTransport implements MediaTransport {
     this.localStream = stream;
   }
 
-  private emit(event: TransportEvent, ...args: any[]): void {
+  private emit<Event extends TransportEvent>(
+    event: Event,
+    ...args: TransportEventPayloads[Event]
+  ): void {
     const handlers = this.listeners.get(event);
     if (handlers) {
       for (const handler of handlers) {
-        handler(...args);
+        (handler as TransportEventHandler<Event>)(...args);
       }
     }
   }

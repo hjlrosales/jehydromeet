@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Socket } from 'socket.io-client';
 import { SocketEvents } from '@jehydro/shared-types';
 import type {
@@ -116,24 +116,19 @@ export function useMediaTransport(socket: Socket | null): UseMediaTransportResul
   const speakingRef = useRef<Set<string>>(new Set());
   const myUuidRef = useRef<string>('');
 
-  /**
-   * Create a MeshTransport and set up its event listeners.
-   * Only used when mediaMode === 'mesh'.
-   */
-  const createMeshTransport = useCallback(() => {
-    if (!socket) return null;
-
-    const transport = new MeshTransport(socket);
-    setupTransportListeners(transport);
-    return transport;
-  }, [socket]);
+  // Helper to push remote streams state to React
+  const updateRemoteStreams = useCallback(() => {
+    setRemoteStreams(Array.from(remoteStreamsRef.current.values()));
+  }, []);
 
   /**
    * Set up transport event listeners for remote streams, speaking detection, etc.
    * Shared between MeshTransport and SfuTransport.
    */
   const setupTransportListeners = useCallback((transport: MediaTransport) => {
-    transport.on('track-added', (remoteUuid: string, stream: MediaStream) => {
+    transport.on('track-added', (remoteUuid: string, stream: unknown) => {
+      if (!(stream instanceof MediaStream)) return;
+
       const participant = participantsRef.current.get(remoteUuid);
       if (!participant) return;
 
@@ -181,12 +176,19 @@ export function useMediaTransport(socket: Socket | null): UseMediaTransportResul
     transport.on('connection-state', (_uuid: string, _state: string) => {
       // Could update connection status in the UI
     });
-  }, []);
+  }, [updateRemoteStreams]);
 
-  // Helper to push remote streams state to React
-  const updateRemoteStreams = useCallback(() => {
-    setRemoteStreams(Array.from(remoteStreamsRef.current.values()));
-  }, []);
+  /**
+   * Create a MeshTransport and set up its event listeners.
+   * Only used when mediaMode === 'mesh'.
+   */
+  const createMeshTransport = useCallback(() => {
+    if (!socket) return null;
+
+    const transport = new MeshTransport(socket);
+    setupTransportListeners(transport);
+    return transport;
+  }, [socket, setupTransportListeners]);
 
   // Set up socket-level listeners (shared between mesh and SFU)
   useEffect(() => {
@@ -348,7 +350,7 @@ export function useMediaTransport(socket: Socket | null): UseMediaTransportResul
 
       setIsReady(true);
     },
-    [socket, createMeshTransport]
+    [socket, createMeshTransport, setupTransportListeners]
   );
 
   const toggleMic = useCallback(async () => {
@@ -426,7 +428,7 @@ export function useMediaTransport(socket: Socket | null): UseMediaTransportResul
   }, [socket, isSharingScreen]);
 
   // Build the combined participant list (self + remote)
-  const allParticipants: ParticipantBrief[] = useMemo(() => {
+  const allParticipants: ParticipantBrief[] = (() => {
     const list: ParticipantBrief[] = [];
     const myUuid = myUuidRef.current;
 
@@ -457,7 +459,7 @@ export function useMediaTransport(socket: Socket | null): UseMediaTransportResul
     }
 
     return list;
-  }, [remoteStreams, micEnabled, cameraEnabled]);
+  })();
 
   return {
     localStream,

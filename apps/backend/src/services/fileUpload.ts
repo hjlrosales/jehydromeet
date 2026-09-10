@@ -91,6 +91,8 @@ export interface FileUploadResult {
   expiresAt: Date;
 }
 
+type FileUploadRecord = FileUploadResult;
+
 // -----------------------------------------------------------
 // Save file metadata to database
 // -----------------------------------------------------------
@@ -189,7 +191,7 @@ export async function getRoomFiles(roomId: string): Promise<FileUploadResult[]> 
       take: 50,
     });
 
-    return records.map((r) => ({
+    return records.map((r: FileUploadRecord) => ({
       id: r.id,
       originalName: r.originalName,
       mimeType: r.mimeType,

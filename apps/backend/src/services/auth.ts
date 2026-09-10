@@ -13,6 +13,7 @@
 
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import type { Secret, SignOptions } from 'jsonwebtoken';
 import crypto from 'crypto';
 import prisma from './db';
 
@@ -20,7 +21,7 @@ import prisma from './db';
 // Constants
 // -----------------------------------------------------------
 
-const JWT_SECRET = process.env.JWT_SECRET ?? crypto.randomBytes(64).toString('hex');
+const JWT_SECRET: Secret = process.env.JWT_SECRET ?? crypto.randomBytes(64).toString('hex');
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN ?? '30d';
 const MAGIC_LINK_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const BCRYPT_ROUNDS = 12;
@@ -55,10 +56,11 @@ export interface UserProfile {
 // -----------------------------------------------------------
 
 function generateJwt(user: { id: string; email: string; displayName: string }): string {
+  const options: SignOptions = { expiresIn: JWT_EXPIRES_IN as SignOptions['expiresIn'] };
   return jwt.sign(
     { userId: user.id, email: user.email, displayName: user.displayName },
     JWT_SECRET,
-    { expiresIn: JWT_EXPIRES_IN }
+    options
   );
 }
 
@@ -344,7 +346,7 @@ export async function updateProfile(
       updateData.avatarUrl = data.avatarUrl;
     }
 
-    const user = await prisma.user.update({
+    await prisma.user.update({
       where: { id: userId },
       data: updateData,
     });

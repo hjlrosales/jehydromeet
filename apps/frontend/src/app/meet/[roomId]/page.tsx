@@ -3,7 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { SocketEvents } from '@jehydro/shared-types';
-import type { RoomJoinedPayload, RoomErrorPayload } from '@jehydro/shared-types';
+import type {
+  BackgroundEffect,
+  BackgroundImagePresetId,
+  RoomErrorPayload,
+  RoomJoinedPayload,
+} from '@jehydro/shared-types';
 import { useSocket } from '@/hooks/useSocket';
 import { useMediaTransport } from '@/hooks/useMediaTransport';
 import { consumePendingRoomState } from '@/lib/roomState';
@@ -18,6 +23,7 @@ import { ChatPanel } from '@/components/ChatPanel';
 import { useToast } from '@/hooks/useToast';
 import { ToastContainer } from '@/components/ToastContainer';
 import { useChat } from '@/hooks/useChat';
+import { AppLogo } from '@/components/AppLogo';
 
 export default function MeetRoomPage() {
   const params = useParams();
@@ -138,6 +144,9 @@ export default function MeetRoomPage() {
     const onShareBlocked = (payload: { reason: string }) => {
       addToast(payload.reason, 'warning');
     };
+    const onRoomError = (payload: RoomErrorPayload) => {
+      addToast(payload.message, 'error', 8000);
+    };
 
     // Waiting room events
     const onWaitingParticipantAdded = (payload: { participant: { displayName: string } }) => {
@@ -192,6 +201,7 @@ export default function MeetRoomPage() {
     socket.on(SocketEvents.SCREEN_SHARE_STARTED, onShareStarted);
     socket.on(SocketEvents.SCREEN_SHARE_STOPPED, onShareStopped);
     socket.on(SocketEvents.SCREEN_SHARE_BLOCKED, onShareBlocked);
+    socket.on(SocketEvents.ROOM_ERROR, onRoomError);
     socket.on(SocketEvents.WAITING_PARTICIPANT_ADDED, onWaitingParticipantAdded);
     socket.on(SocketEvents.ROOM_LOCKED, onRoomLocked);
     socket.on(SocketEvents.ROOM_UNLOCKED, onRoomUnlocked);
@@ -208,6 +218,7 @@ export default function MeetRoomPage() {
       socket.off(SocketEvents.SCREEN_SHARE_STARTED, onShareStarted);
       socket.off(SocketEvents.SCREEN_SHARE_STOPPED, onShareStopped);
       socket.off(SocketEvents.SCREEN_SHARE_BLOCKED, onShareBlocked);
+      socket.off(SocketEvents.ROOM_ERROR, onRoomError);
       socket.off(SocketEvents.WAITING_PARTICIPANT_ADDED, onWaitingParticipantAdded);
       socket.off(SocketEvents.ROOM_LOCKED, onRoomLocked);
       socket.off(SocketEvents.ROOM_UNLOCKED, onRoomUnlocked);
@@ -218,7 +229,7 @@ export default function MeetRoomPage() {
       socket.off(SocketEvents.RECORDING_STOPPED, onRecordingStopped);
       socket.off(SocketEvents.RECORDING_ERROR, onRecordingError);
     };
-  }, [socket, state, addToast]);
+  }, [socket, state, addToast, router]);
 
   // Handle going from name lobby to preview
   const goToPreview = useCallback(() => {
@@ -331,13 +342,11 @@ export default function MeetRoomPage() {
       });
 
       socket.on(SocketEvents.WAITING_ADMITTED, () => {
-        socket.off(SocketEvents.ROOM_JOINED);
         socket.off(SocketEvents.ROOM_ERROR);
         socket.off(SocketEvents.ROOM_NOT_FOUND);
         socket.off(SocketEvents.PASSWORD_REQUIRED);
         socket.off(SocketEvents.PASSWORD_INCORRECT);
         socket.off(SocketEvents.WAITING_ADMITTED);
-        socket.off(SocketEvents.WAITING_REJECTED);
         setState('waiting');
         sessionStorage.setItem('jehydro-display-name', trimmedName);
       });
@@ -375,11 +384,7 @@ export default function MeetRoomPage() {
       <div className="flex min-h-screen flex-col bg-white dark:bg-slate-900">
         <header className="flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-700 sm:px-6">
           <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" className="h-5 w-5">
-                <path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-              </svg>
-            </div>
+            <AppLogo className="h-8 w-8" />
             <span className="text-lg font-semibold text-slate-900 dark:text-white">Jehydro Meet</span>
           </div>
           <ThemeToggle />
@@ -553,7 +558,6 @@ export default function MeetRoomPage() {
           socket={socket}
           roomId={roomId}
           myUuid={roomInfo?.yourUuid ?? ''}
-          myDisplayName={media.allParticipants[0]?.displayName ?? 'You'}
           isHost={isHost}
           onClose={() => setPollsOpen(false)}
         />
@@ -857,8 +861,8 @@ interface MeetingToolbarProps {
   onToggleMic: () => void;
   onToggleCamera: () => void;
   onLeave: () => void;
-  currentBackgroundEffect: 'none' | 'blur' | 'image';
-  onBackgroundEffectChange: (effect: 'none' | 'blur' | 'image', imageId?: string) => void;
+  currentBackgroundEffect: BackgroundEffect;
+  onBackgroundEffectChange: (effect: BackgroundEffect, imageId?: BackgroundImagePresetId) => void;
   onWhiteboard: () => void;
   onPolls: () => void;
   onBreakoutRooms: () => void;

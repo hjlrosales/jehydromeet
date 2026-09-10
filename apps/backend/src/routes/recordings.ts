@@ -50,6 +50,11 @@ recordingRouter.get('/my', requireAuth, async (req: Request, res: Response) => {
  */
 recordingRouter.get('/:roomId', async (req: Request, res: Response) => {
   const { roomId } = req.params;
+  if (!roomId) {
+    res.status(400).json({ error: 'Room ID is required.' });
+    return;
+  }
+
   const recordings = (await getRecordings(roomId)).filter((r) => r.status !== 'recording');
   res.json({ roomId, recordings });
 });
@@ -60,6 +65,11 @@ recordingRouter.get('/:roomId', async (req: Request, res: Response) => {
  */
 recordingRouter.get('/:roomId/download/:id', async (req: Request, res: Response) => {
   const { roomId, id } = req.params;
+  if (!roomId || !id) {
+    res.status(400).json({ error: 'Room ID and recording ID are required.' });
+    return;
+  }
+
   const recordings = await getRecordings(roomId);
   const recording = recordings.find((r) => r.id === id);
 

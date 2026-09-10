@@ -98,6 +98,23 @@ export type TransportEvent =
   | 'speaking-changed'
   | 'connection-state';
 
+export interface TrackAddedMetadata {
+  isScreenShare?: boolean;
+}
+
+export interface TransportEventPayloads {
+  'track-added': [remoteUuid: string, stream: unknown, metadata?: TrackAddedMetadata];
+  'track-removed': [remoteUuid: string];
+  'peer-joined': [remoteUuid: string];
+  'peer-left': [remoteUuid: string];
+  'speaking-changed': [remoteUuid: string, speaking: boolean];
+  'connection-state': [remoteUuid: string, state: string];
+}
+
+export type TransportEventHandler<Event extends TransportEvent = TransportEvent> = (
+  ...args: TransportEventPayloads[Event]
+) => void;
+
 export interface MediaTransport {
   join(opts: JoinOptions): Promise<void>;
   leave(): Promise<void>;
@@ -106,8 +123,8 @@ export interface MediaTransport {
   startScreenShare(): Promise<void>;
   stopScreenShare(): Promise<void>;
   switchCamera(): Promise<void>;
-  on(event: TransportEvent, handler: (...args: any[]) => void): void;
-  off(event: TransportEvent, handler: (...args: any[]) => void): void;
+  on<Event extends TransportEvent>(event: Event, handler: TransportEventHandler<Event>): void;
+  off<Event extends TransportEvent>(event: Event, handler: TransportEventHandler<Event>): void;
   setBackgroundEffect(effect: BackgroundEffect, imageId?: BackgroundImagePresetId): Promise<void>;
 }
 

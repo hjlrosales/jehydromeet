@@ -19,15 +19,19 @@
 import { type Request, type Response, type NextFunction } from 'express';
 import { verifyToken } from '../services/auth';
 
-// Augment Express Request type
+interface AuthenticatedRequestUser {
+  userId: string;
+  email: string;
+  displayName: string;
+}
+
+// Augment Express Request type.
 declare global {
+  // Express exposes this namespace for application-level Request augmentation.
+  // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {
     interface Request {
-      user?: {
-        userId: string;
-        email: string;
-        displayName: string;
-      };
+      user?: AuthenticatedRequestUser;
     }
   }
 }

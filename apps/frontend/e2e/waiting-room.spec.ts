@@ -38,6 +38,15 @@ test.beforeEach(async () => {
   }
 });
 
+async function openCreateMeetingForm(page: Page): Promise<void> {
+  const createButton = page.getByRole('button', { name: /^Create Meeting$/ });
+  await expect(createButton).toBeVisible({ timeout: 10000 });
+  await expect(async () => {
+    await createButton.click();
+    await expect(page.locator('#create-name')).toBeVisible({ timeout: 1000 });
+  }).toPass({ timeout: 10000 });
+}
+
 async function createMeeting(
   page: Page,
   name: string,
@@ -45,8 +54,7 @@ async function createMeeting(
 ): Promise<string> {
   await page.goto(FRONTEND_URL);
   // Click the 'Create Meeting' button on the home page to reveal the form
-  await page.click('text=Create Meeting');
-  await page.waitForSelector('#create-name', { timeout: 5000 });
+  await openCreateMeetingForm(page);
   await page.fill('#create-name', name);
   if (opts?.password) {
     await page.fill('#meeting-password', opts.password);
@@ -70,9 +78,12 @@ async function createMeeting(
 async function joinMeeting(page: Page, roomId: string, name: string): Promise<void> {
   await page.goto(`${FRONTEND_URL}/meet/${roomId}`);
   await page.fill('#room-name', name);
-  await page.click('text=Next');
-  // Now on preview
-  await expect(page.locator('text=Ready to join?')).toBeVisible({ timeout: 10000 });
+  const nextButton = page.getByRole('button', { name: /^Next$/ });
+  await expect(nextButton).toBeVisible({ timeout: 10000 });
+  await expect(async () => {
+    await nextButton.click();
+    await expect(page.locator('text=Ready to join?')).toBeVisible({ timeout: 1000 });
+  }).toPass({ timeout: 10000 });
 }
 
 async function clickJoin(page: Page): Promise<void> {
@@ -91,8 +102,7 @@ test.describe('Phase 11 — Waiting Room & Password', () => {
     await page.goto(FRONTEND_URL);
 
     // Click the 'Create Meeting' button on the home page to reveal the form
-    await page.click('text=Create Meeting');
-    await page.waitForSelector('#create-name', { timeout: 5000 });
+    await openCreateMeetingForm(page);
 
     // Fill in host name
     await page.fill('#create-name', 'Host User');

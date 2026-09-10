@@ -14,9 +14,14 @@ coverage/
 # Playwright output
 apps/frontend/test-results/
 apps/frontend/test-results (*)/
+apps/frontend/test-results-codex*/
 apps/frontend/playwright-report/
 apps/frontend/blob-report/
+apps/frontend/.next.codex-stale/
 
 # Uploaded/generated content
 uploads/
 recordings/
+
+# Local deployment package output
+hostinger-final-clean-*/

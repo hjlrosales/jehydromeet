@@ -39,6 +39,11 @@ uploadRouter.post(
       const { roomId } = req.params;
       const file = req.file;
 
+      if (!roomId) {
+        res.status(400).json({ error: 'Room ID is required.' });
+        return;
+      }
+
       if (!file) {
         res.status(400).json({ error: 'No file provided.' });
         return;
@@ -83,6 +88,11 @@ uploadRouter.post(
 uploadRouter.get('/room/:roomId', optionalAuth, async (req: Request, res: Response) => {
   try {
     const { roomId } = req.params;
+    if (!roomId) {
+      res.status(400).json({ error: 'Room ID is required.' });
+      return;
+    }
+
     const files = await getRoomFiles(roomId);
     res.json({ files });
   } catch (err) {
@@ -96,7 +106,13 @@ uploadRouter.get('/room/:roomId', optionalAuth, async (req: Request, res: Respon
 // -----------------------------------------------------------
 uploadRouter.get('/:fileId', async (req: Request, res: Response) => {
   try {
-    const metadata = await getFileMetadata(req.params.fileId);
+    const { fileId } = req.params;
+    if (!fileId) {
+      res.status(400).json({ error: 'File ID is required.' });
+      return;
+    }
+
+    const metadata = await getFileMetadata(fileId);
     if (!metadata) {
       res.status(404).json({ error: 'File not found or expired.' });
       return;

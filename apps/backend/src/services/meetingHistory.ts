@@ -25,6 +25,12 @@ export interface MeetingHistoryEntry {
   leftAt: Date | null;
 }
 
+type MeetingHistoryRecord = Omit<MeetingHistoryEntry, 'role'> & {
+  role: string;
+  userId: string;
+  createdAt: Date;
+};
+
 /**
  * Record a meeting join for a signed-in user.
  */
@@ -86,7 +92,7 @@ export async function getUserMeetingHistory(
       skip: offset,
     });
 
-    return entries.map((e) => ({
+    return entries.map((e: MeetingHistoryRecord) => ({
       id: e.id,
       roomId: e.roomId,
       role: e.role as 'host' | 'participant',
@@ -116,6 +122,8 @@ export interface ScheduledMeetingData {
   durationMin: number | null;
   icsToken: string | null;
 }
+
+type ScheduledMeetingRecord = ScheduledMeetingData;
 
 /**
  * Create a scheduled meeting.
@@ -178,7 +186,7 @@ export async function getUpcomingMeetings(
       take: limit,
     });
 
-    return meetings.map((m) => ({
+    return meetings.map((m: ScheduledMeetingRecord) => ({
       id: m.id,
       roomId: m.roomId,
       title: m.title,

@@ -232,14 +232,6 @@ Rules:
 
 ---
 
-# Future Phases
-
-## Phase 11 — Waiting Room & Meeting Password (next)
-
-**Goal:** Access control for sensitive meetings.
-
----
-
 ## Phase 11 — Waiting Room & Meeting Password
 
 **Goal:** Access control for sensitive meetings.
@@ -263,7 +255,7 @@ Rules:
 - **Lock override**: `WAITING_ADMIT` handler checks `room.locked` and rejects admission if true
 - **Host notifications**: `WAITING_PARTICIPANT_ADDED` event for toasts + `WAITING_PARTICIPANTS_LIST` for panel updates
 - **Frontend**: Password field in `JoinPreview`, waiting screen with animated dots, "Leave waiting room" button (emits `ROOM_LEAVE`), waiting list section in `ParticipantsPanel`
-- **Admit all / Deny all** not implemented (bulk actions left for future enhancement)
+- **Bulk waiting-room actions**: Admit All / Deny All implemented in `ParticipantsPanel` and enforced by `WAITING_ADMIT_ALL` / `WAITING_DENY_ALL` handlers
 
 ---
 
@@ -301,12 +293,14 @@ Rules:
 
 **Goal:** In-meeting collaboration tools.
 
-- [x] Whiteboard: shared canvas component (canvas-based drawing) synced via Socket.IO; host can clear/lock; color/size pickers; stroke relay via signaling server; new-joiner state sync via host  - [x] Polls: host creates polls with 2-10 options; live results via Socket.IO sync; host can close polls; vote deduplication (previous vote removed before new vote)  - [x] Breakout rooms: host creates 2-8 sub-rooms with auto-split; manual assign/reassign via host UI; host broadcast message to all rooms (displayed as announcements); close breakouts returns everyone to main room; non-host participants see their breakout room assignment
+- [x] Whiteboard: shared canvas component (canvas-based drawing) synced via Socket.IO; host can clear/lock; color/size pickers; stroke relay via signaling server; new-joiner state sync via host
+- [x] Polls: host creates polls with 2-10 options; live results via Socket.IO sync; host can close polls; vote deduplication (previous vote removed before new vote)
+- [x] Breakout rooms: host creates 2-8 sub-rooms with auto-split; manual assign/reassign via host UI; host broadcast message to all rooms (displayed as announcements); close breakouts returns everyone to main room; non-host participants see their breakout room assignment
 - [x] All three features work in mesh and SFU modes (whiteboard is transport-agnostic)
 
 **Exit criteria:** Host splits 6 participants into 2 breakout rooms and brings them back; a poll collects votes from all participants; whiteboard strokes sync <300ms.
 
-**Remaining for Phase 14:** Implement Polls and Breakout rooms features.
+**Phase 14 status:** Whiteboard, polls, and breakout rooms are implemented.
 
 ---
 

@@ -25,11 +25,6 @@ export function AuthModal() {
   const [loading, setLoading] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  // Sync mode with authModal prop
-  if (authModal === 'none') return null;
-
-  const isOpen = authModal !== 'none';
-
   const handleSubmit = useCallback(async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -78,6 +73,9 @@ export function AuthModal() {
       setLoading(false);
     }
   }, [mode, email, password, displayName, signin, signup, requestMagicLink]);
+
+  // Sync mode with authModal prop
+  if (authModal === 'none') return null;
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={closeAuthModal}>

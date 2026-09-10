@@ -38,8 +38,8 @@ const FPS_SAMPLE_WINDOW = 1000; // ms
 export class BackgroundProcessor {
   private rawStream: MediaStream;
   private videoEl: HTMLVideoElement | null = null;
-  private canvas: OffscreenCanvas | null = null;
-  private ctx: OffscreenCanvasRenderingContext2D | null = null;
+  private canvas: HTMLCanvasElement | null = null;
+  private ctx: CanvasRenderingContext2D | null = null;
   private outputStream: MediaStream | null = null;
   private animationId: number | null = null;
 
@@ -78,13 +78,15 @@ export class BackgroundProcessor {
     await video.play();
     this.videoEl = video;
 
-    // Create offscreen canvas at video resolution
+    // Create canvas at video resolution. HTMLCanvasElement supports captureStream().
     const track = this.rawStream.getVideoTracks()[0];
     const settings = track?.getSettings();
     const width = settings?.width ?? 640;
     const height = settings?.height ?? 480;
 
-    this.canvas = new OffscreenCanvas(width, height);
+    this.canvas = document.createElement('canvas');
+    this.canvas.width = width;
+    this.canvas.height = height;
     this.ctx = this.canvas.getContext('2d')!;
 
     // Create the output stream from the canvas
@@ -236,7 +238,7 @@ export class BackgroundProcessor {
 
   private compositeWithMask(
     video: HTMLVideoElement,
-    ctx: OffscreenCanvasRenderingContext2D,
+    ctx: CanvasRenderingContext2D,
     w: number,
     h: number
   ): void {
@@ -269,7 +271,7 @@ export class BackgroundProcessor {
     this.compositePerson(video, ctx, w, h, mask);
   }
 
-  private applyBlur(ctx: OffscreenCanvasRenderingContext2D, w: number, h: number): void {
+  private applyBlur(ctx: CanvasRenderingContext2D, w: number, h: number): void {
     // Downscale for performance then blur
     const scaleW = Math.round(w / 4);
     const scaleH = Math.round(h / 4);
@@ -282,7 +284,9 @@ export class BackgroundProcessor {
       const tempCanvas = new OffscreenCanvas(scaleW, scaleH);
       const tempCtx = tempCanvas.getContext('2d')!;
       tempCtx.drawImage(ctx.canvas, 0, 0, scaleW, scaleH);
+      ctx.filter = `blur(${this.BLUR_RADIUS}px)`;
       ctx.drawImage(tempCanvas, 0, 0, w, h);
+      ctx.filter = 'none';
     } catch {
       // Fallback: solid dark color
       ctx.fillStyle = '#1a202c';
@@ -292,7 +296,7 @@ export class BackgroundProcessor {
 
   private compositePerson(
     video: HTMLVideoElement,
-    ctx: OffscreenCanvasRenderingContext2D,
+    ctx: CanvasRenderingContext2D,
     w: number,
     h: number,
     mask: SegmentationResult

@@ -17,7 +17,7 @@ export function BackgroundEffectToggle({
   const panelRef = useRef<HTMLDivElement>(null);
 
   const handleSelect = useCallback(
-    (effect: BackgroundEffect, imageId?: string) => {
+    (effect: BackgroundEffect, imageId?: BackgroundImagePresetId) => {
       onEffectChange(effect, imageId);
       setOpen(false);
     },

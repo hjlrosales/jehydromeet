@@ -12,7 +12,7 @@ export const metadata: Metadata = {
   description:
     'Browser-based video conferencing. No accounts, no installs — just join by link.',
   icons: {
-    icon: '/favicon.ico',
+    icon: '/favicon.svg',
   },
 };
 

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ThemeToggle } from '@/components/ThemeToggle';
+import { AppLogo } from '@/components/AppLogo';
 import {
   enumerateDevices,
   loadDevicePreferences,
@@ -223,11 +224,7 @@ export function JoinPreview({ roomId, displayName, onJoin, onBack, needsPassword
       <div className="flex min-h-screen flex-col bg-slate-900">
         <header className="flex items-center justify-between border-b border-slate-700 px-4 py-3 sm:px-6">
           <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" className="h-5 w-5">
-                <path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-              </svg>
-            </div>
+            <AppLogo className="h-8 w-8" />
             <span className="text-lg font-semibold text-white">Jehydro Meet</span>
           </div>
           <ThemeToggle />
@@ -266,11 +263,7 @@ export function JoinPreview({ roomId, displayName, onJoin, onBack, needsPassword
       {/* Header */}
       <header className="flex items-center justify-between border-b border-slate-700 px-4 py-3 sm:px-6">
         <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" className="h-5 w-5">
-              <path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-            </svg>
-          </div>
+          <AppLogo className="h-8 w-8" />
           <span className="text-lg font-semibold text-white">Jehydro Meet</span>
         </div>
         <ThemeToggle />

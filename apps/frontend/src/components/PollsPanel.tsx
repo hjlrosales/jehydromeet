@@ -1,21 +1,30 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { Socket } from 'socket.io-client';
 import { SocketEvents } from '@jehydro/shared-types';
-import type { Poll } from '@jehydro/shared-types';
+import type { Poll, PollClosedPayload, PollCreatedPayload, PollStatePayload, PollVotedPayload } from '@jehydro/shared-types';
 
 interface PollsPanelProps {
   socket: Socket | null;
   roomId: string;
   myUuid: string;
-  myDisplayName: string;
   isHost: boolean;
   onClose: () => void;
 }
 
 // In-memory polls store per room (persists across panel open/close)
 const pollsStore = new Map<string, Poll[]>();
+
+function upsertPoll(roomId: string, poll: Poll): Poll[] {
+  const existing = pollsStore.get(roomId) ?? [];
+  const index = existing.findIndex((p) => p.id === poll.id);
+  const updated = index === -1
+    ? [...existing, poll]
+    : existing.map((p) => (p.id === poll.id ? poll : p));
+  pollsStore.set(roomId, updated);
+  return updated;
+}
 
 export function PollsPanel({
   socket,
@@ -30,37 +39,25 @@ export function PollsPanel({
   const [optionsText, setOptionsText] = useState<string[]>(['', '']);
   const [sending, setSending] = useState(false);
 
-  const pollsRef = useRef<Poll[]>(polls);
-  pollsRef.current = polls;
-
   // -----------------------------------------------------------
   // Socket listeners for poll sync
   // -----------------------------------------------------------
   useEffect(() => {
     if (!socket) return;
 
-    const onPollCreated = (payload: { poll: Poll }) => {
-      const existing = pollsStore.get(roomId) ?? [];
-      const updated = [...existing, payload.poll];
-      pollsStore.set(roomId, updated);
-      setPolls(updated);
+    const onPollCreated = (payload: PollCreatedPayload) => {
+      setPolls(upsertPoll(roomId, payload.poll));
     };
 
-    const onPollVoted = (payload: { poll: Poll }) => {
-      const existing = pollsStore.get(roomId) ?? [];
-      const updated = existing.map((p) => (p.id === payload.poll.id ? payload.poll : p));
-      pollsStore.set(roomId, updated);
-      setPolls(updated);
+    const onPollVoted = (payload: PollVotedPayload) => {
+      setPolls(upsertPoll(roomId, payload.poll));
     };
 
-    const onPollClosed = (payload: { poll: Poll }) => {
-      const existing = pollsStore.get(roomId) ?? [];
-      const updated = existing.map((p) => (p.id === payload.poll.id ? payload.poll : p));
-      pollsStore.set(roomId, updated);
-      setPolls(updated);
+    const onPollClosed = (payload: PollClosedPayload) => {
+      setPolls(upsertPoll(roomId, payload.poll));
     };
 
-    const onPollState = (payload: { polls: Poll[] }) => {
+    const onPollState = (payload: PollStatePayload) => {
       pollsStore.set(roomId, payload.polls);
       setPolls(payload.polls);
     };

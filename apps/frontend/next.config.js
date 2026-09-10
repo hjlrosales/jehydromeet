@@ -1,8 +1,11 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: 'standalone',
   transpilePackages: ['@jehydro/shared-types'],
   images: { unoptimized: true },
 };
+
+if (process.env.NEXT_STANDALONE !== 'false') {
+  nextConfig.output = 'standalone';
+}
 
 module.exports = nextConfig;

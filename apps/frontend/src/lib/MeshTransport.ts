@@ -14,6 +14,8 @@ import type {
   MediaTransport,
   JoinOptions,
   TransportEvent,
+  TransportEventHandler,
+  TransportEventPayloads,
   SignalMessage,
 } from '@jehydro/shared-types';
 
@@ -47,8 +49,6 @@ const MEDIA_CONSTRAINTS: MediaStreamConstraints = {
   } as MediaTrackConstraints,
 };
 
-type EventHandler = (...args: any[]) => void;
-
 export class MeshTransport implements MediaTransport {
   private socket: Socket;
   private myUuid: string = '';
@@ -63,7 +63,7 @@ export class MeshTransport implements MediaTransport {
   private remoteStreams = new Map<string, MediaStream>();
 
   // Event listeners
-  private listeners = new Map<TransportEvent, Set<EventHandler>>();
+  private listeners = new Map<TransportEvent, Set<TransportEventHandler>>();
 
   // Track which remote participants we've already sent an offer to
   private offeredPeers = new Set<string>();
@@ -167,7 +167,6 @@ export class MeshTransport implements MediaTransport {
   // Background effect (Phase 13)
   private backgroundProcessor: BackgroundProcessor | null = null;
   private originalVideoTrack: MediaStreamTrack | null = null;
-  private backgroundImageId: BackgroundImagePresetId | null = null;
 
   async startScreenShare(): Promise<void> {
     if (this.screenTrack) {
@@ -353,15 +352,15 @@ export class MeshTransport implements MediaTransport {
     }
   }
 
-  on(event: TransportEvent, handler: EventHandler): void {
+  on<Event extends TransportEvent>(event: Event, handler: TransportEventHandler<Event>): void {
     if (!this.listeners.has(event)) {
       this.listeners.set(event, new Set());
     }
-    this.listeners.get(event)!.add(handler);
+    this.listeners.get(event)!.add(handler as TransportEventHandler);
   }
 
-  off(event: TransportEvent, handler: EventHandler): void {
-    this.listeners.get(event)?.delete(handler);
+  off<Event extends TransportEvent>(event: Event, handler: TransportEventHandler<Event>): void {
+    this.listeners.get(event)?.delete(handler as TransportEventHandler);
   }
 
   // -----------------------------------------------------------
@@ -695,11 +694,14 @@ export class MeshTransport implements MediaTransport {
     this.handleIceCandidate(message);
   };
 
-  private emit(event: TransportEvent, ...args: any[]): void {
+  private emit<Event extends TransportEvent>(
+    event: Event,
+    ...args: TransportEventPayloads[Event]
+  ): void {
     const handlers = this.listeners.get(event);
     if (handlers) {
       for (const handler of handlers) {
-        handler(...args);
+        (handler as TransportEventHandler<Event>)(...args);
       }
     }
   }
@@ -750,9 +752,6 @@ export class MeshTransport implements MediaTransport {
     const processor = new BackgroundProcessor(this.localStream);
     await processor.init();
 
-    if (effect === 'image' && imageId) {
-      this.backgroundImageId = imageId;
-    }
     processor.setEffect(effect, imageId);
 
     this.backgroundProcessor = processor;

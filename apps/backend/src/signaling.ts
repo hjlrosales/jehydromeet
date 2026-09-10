@@ -543,7 +543,7 @@ export function setupSignaling(io: SocketIOServer, roomManager: RoomManager): vo
       }
     });
 
-    socket.on(SocketEvents.WAITING_ADMIT_ALL, async (payload: WaitingAdmitAllPayload) => {
+    socket.on(SocketEvents.WAITING_ADMIT_ALL, async (_payload: WaitingAdmitAllPayload) => {
       try {
         const validation = validateHostAction(socket.id);
         if (!validation.valid) {
@@ -555,6 +555,10 @@ export function setupSignaling(io: SocketIOServer, roomManager: RoomManager): vo
 
         // Lock overrides admit-all: if the meeting is locked, block admission
         const room = roomManager.getRoom(roomId);
+        if (!room) {
+          socket.emit(SocketEvents.ROOM_NOT_FOUND, { roomId });
+          return;
+        }
         if (room?.locked) {
           socket.emit(SocketEvents.ROOM_ERROR, {
             code: 'ROOM_LOCKED',
@@ -639,7 +643,7 @@ export function setupSignaling(io: SocketIOServer, roomManager: RoomManager): vo
       }
     });
 
-    socket.on(SocketEvents.WAITING_DENY_ALL, (payload: WaitingDenyAllPayload) => {
+    socket.on(SocketEvents.WAITING_DENY_ALL, (_payload: WaitingDenyAllPayload) => {
       try {
         const validation = validateHostAction(socket.id);
         if (!validation.valid) {
@@ -1312,10 +1316,10 @@ export function setupSignaling(io: SocketIOServer, roomManager: RoomManager): vo
           return;
         }
 
-        const payload = { state: result.state };
+        const createdPayload = { state: result.state };
 
         // Broadcast to ALL participants (including host) so they know their assignment
-        io.to(validation.roomId).emit(SocketEvents.BREAKOUT_CREATED, payload);
+        io.to(validation.roomId).emit(SocketEvents.BREAKOUT_CREATED, createdPayload);
 
         // Also notify each participant individually about their current breakout room
         // (the BREAKOUT_CREATED payload already has assignments)

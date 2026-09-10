@@ -3,14 +3,16 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Socket } from 'socket.io-client';
 import { SocketEvents } from '@jehydro/shared-types';
-import type { BreakoutRoomsState } from '@jehydro/shared-types';
+import type {
+  BreakoutAssignedPayload,
+  BreakoutBroadcastedPayload,
+  BreakoutCreatedPayload,
+  BreakoutRoomsState,
+  BreakoutStatePayload,
+  Participant,
+} from '@jehydro/shared-types';
 
-// Minimal participant type used by this component
-interface BreakoutParticipant {
-  uuid: string;
-  displayName: string;
-  isHost: boolean;
-}
+type BreakoutParticipant = Pick<Participant, 'uuid' | 'displayName' | 'isHost'>;
 
 interface BreakoutRoomsPanelProps {
   socket: Socket | null;
@@ -51,12 +53,12 @@ export function BreakoutRoomsPanel({
   useEffect(() => {
     if (!socket) return;
 
-    const onBreakoutCreated = (payload: { state: BreakoutRoomsState }) => {
+    const onBreakoutCreated = (payload: BreakoutCreatedPayload) => {
       breakoutStore.set(roomId, payload.state);
       setBreakoutState(payload.state);
     };
 
-    const onBreakoutAssigned = (payload: { state: BreakoutRoomsState }) => {
+    const onBreakoutAssigned = (payload: BreakoutAssignedPayload) => {
       breakoutStore.set(roomId, payload.state);
       setBreakoutState(payload.state);
     };
@@ -68,14 +70,14 @@ export function BreakoutRoomsPanel({
       setBroadcastHistory([]);
     };
 
-    const onBreakoutBroadcasted = (payload: { senderName: string; message: string }) => {
+    const onBreakoutBroadcasted = (payload: BreakoutBroadcastedPayload) => {
       const existing = broadcastHistoryStore.get(roomId) ?? [];
       const updated = [...existing, payload];
       broadcastHistoryStore.set(roomId, updated);
       setBroadcastHistory(updated);
     };
 
-    const onBreakoutState = (payload: { state: BreakoutRoomsState | null }) => {
+    const onBreakoutState = (payload: BreakoutStatePayload) => {
       breakoutStore.set(roomId, payload.state);
       setBreakoutState(payload.state);
     };
@@ -341,7 +343,7 @@ export function BreakoutRoomsPanel({
                                   className="rounded bg-slate-600 px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-slate-500"
                                   title={`Move to ${r.name}`}
                                 >
-                                  →{r.name.replace('Room ', '')}
+                                  &rarr;{r.name.replace('Room ', '')}
                                 </button>
                               ))}
                           </div>

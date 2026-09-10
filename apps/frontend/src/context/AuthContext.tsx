@@ -67,6 +67,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [authModal, setAuthModal] = useState<'none' | 'signin' | 'signup' | 'magic-link'>('none');
 
+  // Fetch user profile
+  const fetchProfile = useCallback(async (token: string): Promise<UserProfile | null> => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/auth/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (!data.authenticated) return null;
+      return data.user;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  // Store JWT and fetch profile
+  const handleAuthSuccess = useCallback((token: string) => {
+    localStorage.setItem('jehydro-jwt', token);
+    fetchProfile(token).then((profile) => {
+      if (profile) setUser(profile);
+    });
+    setAuthModal('none');
+  }, [fetchProfile]);
+
   // Load user from stored token on mount
   useEffect(() => {
     const token = localStorage.getItem('jehydro-jwt');
@@ -82,31 +106,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } else {
       setIsLoading(false);
     }
-  }, []);
-
-  // Fetch user profile
-  async function fetchProfile(token: string): Promise<UserProfile | null> {
-    try {
-      const res = await fetch(`${BACKEND_URL}/api/auth/me`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) return null;
-      const data = await res.json();
-      if (!data.authenticated) return null;
-      return data.user;
-    } catch {
-      return null;
-    }
-  }
-
-  // Store JWT and fetch profile
-  function handleAuthSuccess(token: string) {
-    localStorage.setItem('jehydro-jwt', token);
-    fetchProfile(token).then((profile) => {
-      if (profile) setUser(profile);
-    });
-    setAuthModal('none');
-  }
+  }, [fetchProfile]);
 
   // Sign in
   const signin = useCallback(async (email: string, password: string): Promise<string | null> => {
@@ -123,7 +123,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch {
       return 'Network error. Please try again.';
     }
-  }, []);
+  }, [handleAuthSuccess]);
 
   // Sign up
   const signup = useCallback(async (email: string, password: string, displayName: string): Promise<string | null> => {
@@ -140,7 +140,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch {
       return 'Network error. Please try again.';
     }
-  }, []);
+  }, [handleAuthSuccess]);
 
   // Request magic link
   const requestMagicLink = useCallback(async (email: string): Promise<string | null> => {
@@ -173,7 +173,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch {
       return 'Network error. Please try again.';
     }
-  }, []);
+  }, [handleAuthSuccess]);
 
   // Logout
   const logout = useCallback(() => {
@@ -188,7 +188,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!token) return;
     const profile = await fetchProfile(token);
     if (profile) setUser(profile);
-  }, []);
+  }, [fetchProfile]);
 
   // Open auth modal
   const openAuthModal = useCallback((mode: 'signin' | 'signup' | 'magic-link' = 'signin') => {

@@ -9,7 +9,7 @@
  */
 
 import { Router, type Request, type Response } from 'express';
-import { requireAuth, optionalAuth } from '../middleware/auth';
+import { requireAuth } from '../middleware/auth';
 import {
   getUserMeetingHistory,
   createScheduledMeeting,
@@ -98,7 +98,13 @@ meetingRouter.get('/upcoming', requireAuth, async (req: Request, res: Response) 
 // DELETE /api/meetings/schedule/:id — Delete a scheduled meeting
 // -----------------------------------------------------------
 meetingRouter.delete('/schedule/:id', requireAuth, async (req: Request, res: Response) => {
-  const ok = await deleteScheduledMeeting(req.params.id, req.user!.userId);
+  const { id } = req.params;
+  if (!id) {
+    res.status(400).json({ error: 'Scheduled meeting ID is required.' });
+    return;
+  }
+
+  const ok = await deleteScheduledMeeting(id, req.user!.userId);
   if (!ok) {
     res.status(404).json({ error: 'Scheduled meeting not found.' });
     return;
@@ -110,7 +116,13 @@ meetingRouter.delete('/schedule/:id', requireAuth, async (req: Request, res: Res
 // GET /api/meetings/ics/:token — Download ICS file (public, no auth)
 // -----------------------------------------------------------
 meetingRouter.get('/ics/:token', async (req: Request, res: Response) => {
-  const meeting = await getMeetingByIcsToken(req.params.token);
+  const { token } = req.params;
+  if (!token) {
+    res.status(400).json({ error: 'ICS token is required.' });
+    return;
+  }
+
+  const meeting = await getMeetingByIcsToken(token);
   if (!meeting) {
     res.status(404).json({ error: 'Meeting not found.' });
     return;

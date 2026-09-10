@@ -11,6 +11,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 import { ThemeToggle } from '@/components/ThemeToggle';
+import { AppLogo } from '@/components/AppLogo';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:4000';
 
@@ -45,7 +46,7 @@ interface ScheduledMeeting {
 // -----------------------------------------------------------
 
 export default function AccountPage() {
-  const { user, isAuthenticated, isLoading, logout, openAuthModal } = useAuth();
+  const { user, isAuthenticated, isLoading, openAuthModal } = useAuth();
   const router = useRouter();
 
   const [history, setHistory] = useState<MeetingHistoryEntry[]>([]);
@@ -153,11 +154,7 @@ export default function AccountPage() {
             Back
           </button>
           <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" className="h-5 w-5">
-                <path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-              </svg>
-            </div>
+            <AppLogo className="h-8 w-8" />
             <span className="text-lg font-semibold text-slate-900 dark:text-white">My Account</span>
           </div>
         </div>

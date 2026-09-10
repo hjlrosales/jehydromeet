@@ -1,11 +1,34 @@
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
-import type { MediaMode, Participant, WaitingParticipant, Recording, Poll, BreakoutRoom, Room as RoomState } from '@jehydro/shared-types';
+import type {
+  BreakoutRoom,
+  BreakoutRoomsState,
+  MediaMode,
+  Participant,
+  Poll,
+  Recording,
+  Room as RoomState,
+  WaitingParticipant,
+} from '@jehydro/shared-types';
 
 // -----------------------------------------------------------
 // In-memory room store
 // -----------------------------------------------------------
-const rooms = new Map<string, RoomState>();
+type ExtendedRoomState = RoomState & {
+  password?: string;
+  waitingRoom: boolean;
+  pendingParticipants: Map<string, WaitingParticipant>;
+  isRecording: boolean;
+  recordingEgressId: string | null;
+  recordingStartedAt: number | null;
+  recordings: Recording[];
+  polls: Poll[];
+  breakoutActive: boolean;
+  breakoutRooms: BreakoutRoom[];
+  breakoutAssignments: Record<string, string>;
+};
+
+const rooms = new Map<string, ExtendedRoomState>();
 
 const ROOM_ID_LENGTH = 8;
 const ROOM_ID_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -64,7 +87,7 @@ export class RoomManager {
       connectionState: 'connected',
     };
 
-    const room: RoomState & { password?: string; waitingRoom: boolean; pendingParticipants: Map<string, WaitingParticipant>; isRecording: boolean; recordingEgressId: string | null; recordingStartedAt: number | null; recordings: Recording[] } = {
+    const room: ExtendedRoomState = {
       roomId,
       mediaMode,
       hostId,
@@ -81,6 +104,10 @@ export class RoomManager {
       recordingEgressId: null,
       recordingStartedAt: null,
       recordings: [],
+      polls: [],
+      breakoutActive: false,
+      breakoutRooms: [],
+      breakoutAssignments: {},
     };
 
     rooms.set(roomId, room);
@@ -95,13 +122,12 @@ export class RoomManager {
   setRoomOptions(roomId: string, password?: string, waitingRoom?: boolean): boolean {
     const room = rooms.get(roomId);
     if (!room) return false;
-    const r = room as any;
 
     if (password !== undefined) {
-      r.password = password ? crypto.createHash('sha256').update(password).digest('hex') : undefined;
+      room.password = password ? crypto.createHash('sha256').update(password).digest('hex') : undefined;
     }
     if (waitingRoom !== undefined) {
-      r.waitingRoom = waitingRoom;
+      room.waitingRoom = waitingRoom;
     }
     return true;
   }
@@ -111,14 +137,14 @@ export class RoomManager {
    */
   hasPassword(roomId: string): boolean {
     const room = rooms.get(roomId);
-    return !!((room as any)?.password);
+    return !!room?.password;
   }
 
   /**
    * Verify the meeting password.
    */
   verifyPassword(roomId: string, password: string): boolean {
-    const room = rooms.get(roomId) as any;
+    const room = rooms.get(roomId);
     if (!room?.password) return true; // No password set
     const hash = crypto.createHash('sha256').update(password).digest('hex');
     return room.password === hash;
@@ -129,7 +155,7 @@ export class RoomManager {
    */
   hasWaitingRoom(roomId: string): boolean {
     const room = rooms.get(roomId);
-    return !!(room as any)?.waitingRoom;
+    return !!room?.waitingRoom;
   }
 
   /**
@@ -146,11 +172,7 @@ export class RoomManager {
       joinedAt: Date.now(),
     };
 
-    const roomAny = room as any;
-    if (!roomAny.pendingParticipants) {
-      roomAny.pendingParticipants = new Map<string, WaitingParticipant>();
-    }
-    roomAny.pendingParticipants.set(uuid, pending);
+    room.pendingParticipants.set(uuid, pending);
     console.log(`[rooms] ${displayName} (${uuid}) is waiting to join room ${roomId}`);
     return pending;
   }
@@ -162,13 +184,10 @@ export class RoomManager {
     const room = rooms.get(roomId);
     if (!room) return null;
 
-    const roomAny = room as any;
-    if (!roomAny.pendingParticipants) return null;
-
-    const pending = roomAny.pendingParticipants.get(uuid);
+    const pending = room.pendingParticipants.get(uuid);
     if (!pending) return null;
 
-    roomAny.pendingParticipants.delete(uuid);
+    room.pendingParticipants.delete(uuid);
     return pending;
   }
 
@@ -178,9 +197,7 @@ export class RoomManager {
   getPendingParticipants(roomId: string): WaitingParticipant[] {
     const room = rooms.get(roomId);
     if (!room) return [];
-    const roomAny = room as any;
-    if (!roomAny.pendingParticipants) return [];
-    return Array.from(roomAny.pendingParticipants.values());
+    return Array.from(room.pendingParticipants.values());
   }
 
   /**
@@ -190,14 +207,11 @@ export class RoomManager {
     const room = rooms.get(roomId);
     if (!room) return null;
 
-    const roomAny = room as any;
-    if (!roomAny.pendingParticipants) return null;
-
-    const pending = roomAny.pendingParticipants.get(pendingUuid);
+    const pending = room.pendingParticipants.get(pendingUuid);
     if (!pending) return null;
 
     // Remove from pending
-    roomAny.pendingParticipants.delete(pendingUuid);
+    room.pendingParticipants.delete(pendingUuid);
 
     // Add as participant
     const participant: Participant = {
@@ -223,9 +237,6 @@ export class RoomManager {
     const room = rooms.get(roomId);
     if (!room) return null;
 
-    const r = room as any;
-    if (!r.polls) r.polls = [];
-
     const poll: Poll = {
       id: uuidv4(),
       createdBy,
@@ -239,7 +250,7 @@ export class RoomManager {
       status: 'active',
     };
 
-    r.polls.push(poll);
+    room.polls.push(poll);
     return poll;
   }
 
@@ -249,10 +260,7 @@ export class RoomManager {
   votePoll(roomId: string, pollId: string, optionId: string, voterUuid: string): Poll | null {
     const room = rooms.get(roomId);
     if (!room) return null;
-    const r = room as any;
-    if (!r.polls) return null;
-
-    const poll = r.polls.find((p: Poll) => p.id === pollId) as Poll | undefined;
+    const poll = room.polls.find((p) => p.id === pollId);
     if (!poll || poll.status === 'closed') return null;
 
     // Remove previous vote from this voter if any
@@ -274,10 +282,7 @@ export class RoomManager {
   closePoll(roomId: string, pollId: string): Poll | null {
     const room = rooms.get(roomId);
     if (!room) return null;
-    const r = room as any;
-    if (!r.polls) return null;
-
-    const poll = r.polls.find((p: Poll) => p.id === pollId) as Poll | undefined;
+    const poll = room.polls.find((p) => p.id === pollId);
     if (!poll || poll.status === 'closed') return null;
 
     poll.status = 'closed';
@@ -291,8 +296,7 @@ export class RoomManager {
   getPolls(roomId: string): Poll[] {
     const room = rooms.get(roomId);
     if (!room) return [];
-    const r = room as any;
-    return r.polls ?? [];
+    return room.polls;
   }
 
   /**
@@ -305,8 +309,7 @@ export class RoomManager {
     const room = rooms.get(roomId);
     if (!room) return { participants: [] };
 
-    const roomAny = room as any;
-    if (!roomAny.pendingParticipants || roomAny.pendingParticipants.size === 0) {
+    if (room.pendingParticipants.size === 0) {
       return { participants: [] };
     }
 
@@ -318,13 +321,13 @@ export class RoomManager {
     }
 
     const admitted: Participant[] = [];
-    const pendings = Array.from(roomAny.pendingParticipants.values());
+    const pendings = Array.from(room.pendingParticipants.values());
 
     for (const pending of pendings) {
       // If we've reached capacity, stop admitting; remaining stay in waiting
       if (admitted.length >= remainingCapacity) break;
 
-      roomAny.pendingParticipants.delete(pending.uuid);
+      room.pendingParticipants.delete(pending.uuid);
 
       const participant: Participant = {
         uuid: pending.uuid,
@@ -353,13 +356,12 @@ export class RoomManager {
     const room = rooms.get(roomId);
     if (!room) return { denied: [] };
 
-    const roomAny = room as any;
-    if (!roomAny.pendingParticipants || roomAny.pendingParticipants.size === 0) {
+    if (room.pendingParticipants.size === 0) {
       return { denied: [] };
     }
 
-    const denied = Array.from(roomAny.pendingParticipants.values());
-    roomAny.pendingParticipants.clear();
+    const denied = Array.from(room.pendingParticipants.values());
+    room.pendingParticipants.clear();
 
     console.log(`[rooms] Denied ${denied.length} waiting participant(s) from room ${roomId} (bulk)`);
     return { denied };
@@ -368,7 +370,7 @@ export class RoomManager {
   /**
    * Get room by ID. Returns undefined if not found.
    */
-  getRoom(roomId: string): RoomState | undefined {
+  getRoom(roomId: string): ExtendedRoomState | undefined {
     return rooms.get(roomId);
   }
 
@@ -549,13 +551,12 @@ export class RoomManager {
       return { ok: false, error: 'Room not found' };
     }
 
-    const roomAny = room as any;
-    const needsPassword = !!roomAny.password;
-    const waitingEnabled = !!roomAny.waitingRoom;
+    const needsPassword = !!room.password;
+    const waitingEnabled = room.waitingRoom;
 
     // If waiting room is enabled, capacity check is against total (participants + waiting)
-    const totalCapacity = CAPACITY[room.mediaMode] + (roomAny.waitingRoom ? 20 : 0); // Allow extra queue spots
-    const totalInRoom = room.participants.size + (roomAny.pendingParticipants?.size ?? 0);
+    const totalCapacity = CAPACITY[room.mediaMode] + (room.waitingRoom ? 20 : 0); // Allow extra queue spots
+    const totalInRoom = room.participants.size + room.pendingParticipants.size;
 
     if (totalInRoom >= totalCapacity) {
       return { ok: false, error: 'Room is full' };
@@ -639,14 +640,13 @@ export class RoomManager {
   setRecordingState(roomId: string, isRecording: boolean, egressId?: string): boolean {
     const room = rooms.get(roomId);
     if (!room) return false;
-    const r = room as any;
-    r.isRecording = isRecording;
+    room.isRecording = isRecording;
     if (isRecording && egressId) {
-      r.recordingEgressId = egressId;
-      r.recordingStartedAt = Date.now();
+      room.recordingEgressId = egressId;
+      room.recordingStartedAt = Date.now();
     }
     if (!isRecording) {
-      r.recordingEgressId = null;
+      room.recordingEgressId = null;
     }
     return true;
   }
@@ -656,7 +656,7 @@ export class RoomManager {
    */
   isRecording(roomId: string): boolean {
     const room = rooms.get(roomId);
-    return !!((room as any)?.isRecording);
+    return !!room?.isRecording;
   }
 
   /**
@@ -665,9 +665,7 @@ export class RoomManager {
   addRecording(roomId: string, recording: Recording): boolean {
     const room = rooms.get(roomId);
     if (!room) return false;
-    const r = room as any;
-    if (!r.recordings) r.recordings = [];
-    r.recordings.push(recording);
+    room.recordings.push(recording);
     return true;
   }
 
@@ -677,7 +675,7 @@ export class RoomManager {
   getRecordings(roomId: string): Recording[] {
     const room = rooms.get(roomId);
     if (!room) return [];
-    return ((room as any)?.recordings ?? []) as Recording[];
+    return room.recordings;
   }
 
   /**
@@ -685,7 +683,7 @@ export class RoomManager {
    */
   getRecordingEgressId(roomId: string): string | null {
     const room = rooms.get(roomId);
-    return (room as any)?.recordingEgressId ?? null;
+    return room?.recordingEgressId ?? null;
   }
 
   /**
@@ -717,18 +715,16 @@ export class RoomManager {
    * Returns the new breakout state, or null if breakouts are already active.
    */
   createBreakoutRooms(roomId: string, roomCount: number): {
-    state: { isActive: boolean; rooms: BreakoutRoom[]; assignments: Record<string, string> };
+    state: BreakoutRoomsState;
   } | null {
     const room = rooms.get(roomId);
     if (!room) return null;
-
-    const r = room as any;
 
     // Clamp room count
     const count = Math.max(2, Math.min(8, roomCount));
 
     // Check if breakouts are already active
-    if (r.breakoutActive) return null;
+    if (room.breakoutActive) return null;
 
     // Get all non-host participants
     const participants = Array.from(room.participants.values()).filter((p) => !p.isHost);
@@ -757,9 +753,9 @@ export class RoomManager {
     }
 
     // Store state on the room
-    r.breakoutActive = true;
-    r.breakoutRooms = breakoutRooms;
-    r.breakoutAssignments = assignments;
+    room.breakoutActive = true;
+    room.breakoutRooms = breakoutRooms;
+    room.breakoutAssignments = assignments;
 
     console.log(`[rooms] Created ${count} breakout rooms in room ${roomId}`);
 
@@ -779,25 +775,29 @@ export class RoomManager {
     const room = rooms.get(roomId);
     if (!room) return false;
 
-    const r = room as any;
-    if (!r.breakoutActive || !r.breakoutRooms) return false;
+    if (!room.breakoutActive) return false;
+
+    const participant = room.participants.get(participantUuid);
+    if (!participant || participant.isHost) return false;
 
     // Find the breakout room
-    const breakout = r.breakoutRooms.find((br: BreakoutRoom) => br.id === breakoutRoomId) as BreakoutRoom | undefined;
+    const breakout = room.breakoutRooms.find((br) => br.id === breakoutRoomId);
     if (!breakout) return false;
 
     // Remove from any current breakout
-    const currentRoomId = r.breakoutAssignments[participantUuid];
+    const currentRoomId = room.breakoutAssignments[participantUuid];
     if (currentRoomId) {
-      const currentRoom = r.breakoutRooms.find((br: BreakoutRoom) => br.id === currentRoomId) as BreakoutRoom | undefined;
+      const currentRoom = room.breakoutRooms.find((br) => br.id === currentRoomId);
       if (currentRoom) {
         currentRoom.participantUuids = currentRoom.participantUuids.filter((u: string) => u !== participantUuid);
       }
     }
 
     // Add to new breakout
-    breakout.participantUuids.push(participantUuid);
-    r.breakoutAssignments[participantUuid] = breakoutRoomId;
+    if (!breakout.participantUuids.includes(participantUuid)) {
+      breakout.participantUuids.push(participantUuid);
+    }
+    room.breakoutAssignments[participantUuid] = breakoutRoomId;
 
     return true;
   }
@@ -805,23 +805,18 @@ export class RoomManager {
   /**
    * Get the current breakout state for a room.
    */
-  getBreakoutState(roomId: string): {
-    isActive: boolean;
-    rooms: BreakoutRoom[];
-    assignments: Record<string, string>;
-  } | null {
+  getBreakoutState(roomId: string): BreakoutRoomsState | null {
     const room = rooms.get(roomId);
     if (!room) return null;
 
-    const r = room as any;
-    if (!r.breakoutActive) {
+    if (!room.breakoutActive) {
       return { isActive: false, rooms: [], assignments: {} };
     }
 
     return {
       isActive: true,
-      rooms: r.breakoutRooms ?? [],
-      assignments: r.breakoutAssignments ?? {},
+      rooms: room.breakoutRooms,
+      assignments: room.breakoutAssignments,
     };
   }
 
@@ -832,12 +827,11 @@ export class RoomManager {
     const room = rooms.get(roomId);
     if (!room) return false;
 
-    const r = room as any;
-    if (!r.breakoutActive) return false;
+    if (!room.breakoutActive) return false;
 
-    r.breakoutActive = false;
-    r.breakoutRooms = [];
-    r.breakoutAssignments = {};
+    room.breakoutActive = false;
+    room.breakoutRooms = [];
+    room.breakoutAssignments = {};
 
     console.log(`[rooms] Closed breakout rooms in room ${roomId}`);
     return true;
@@ -850,9 +844,8 @@ export class RoomManager {
     const room = rooms.get(roomId);
     if (!room) return null;
 
-    const r = room as any;
-    if (!r.breakoutActive) return null;
+    if (!room.breakoutActive) return null;
 
-    return r.breakoutAssignments?.[participantUuid] ?? null;
+    return room.breakoutAssignments[participantUuid] ?? null;
   }
 }

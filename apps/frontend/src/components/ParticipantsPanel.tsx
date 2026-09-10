@@ -240,11 +240,6 @@ export function ParticipantsPanel({ participants, isOpen, onClose, isHost, socke
 
   return (
     <>
-      {/* Backdrop */}
-      {isOpen && (
-        <div className="fixed inset-0 z-40 bg-black/30 backdrop-blur-sm" />
-      )}
-
       {/* Panel */}
       <div
         ref={panelRef}
